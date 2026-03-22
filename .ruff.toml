@@ -1,2 +1,15 @@
 line-length = 140
 indent-width = 4
+target-version = "py38"
+
+[lint]
+select = ["E", "F", "W", "B", "I", "UP", "SIM"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B007",   # unused loop variable
+    "UP007",  # use X | Y for union (needs 3.10+)
+    "SIM108", # ternary operator
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["B", "SIM"]

@@ -9,10 +9,18 @@ from pathlib import Path
 IS_MAC = os.path.isdir("/System/Library")
 
 SED_IN_PLACE_ARG = "-i ''" if IS_MAC else "-i"
-FILES_TO_COPY = {
-    "eddy-ng/sensor_ldc1612_ng.c": "src",
+
+# Files/directories to install into Klipper
+# Format: source (relative to repo) -> destination (relative to klipper dir)
+FILES_TO_INSTALL = {
+    "eddy-ng/sensor_ldc1612_ng.c": ("src", "file"),
+    "ldc1612_ng.py": ("klippy/extras", "file"),
+    "probe_eddy_ng": ("klippy/extras", "dir"),  # Package directory
+}
+
+# Legacy single-file layout for cleanup
+LEGACY_FILES = {
     "probe_eddy_ng.py": "klippy/extras",
-    "ldc1612_ng.py": "klippy/extras"
 }
 
 
@@ -21,24 +29,40 @@ def get_script_dir():
 
 
 def uninstall_klipper(target_dir: str):
-    for src_file, dest_dir in FILES_TO_COPY.items():
+    # Remove new package-style installation
+    for src_name, (dest_dir, kind) in FILES_TO_INSTALL.items():
         dest_path = os.path.join(target_dir, dest_dir)
-        dest_file = os.path.join(dest_path, os.path.basename(src_file))
+        dest_file = os.path.join(dest_path, os.path.basename(src_name))
         if os.path.islink(dest_file) or os.path.isfile(dest_file):
             print(f"Removing {dest_file}")
             os.remove(dest_file)
+        elif os.path.isdir(dest_file):
+            print(f"Removing directory {dest_file}")
+            shutil.rmtree(dest_file)
         else:
             print(f"File {dest_file} does not exist. Skipping.")
+
+    # Remove legacy single-file installations
+    for src_name, dest_dir in LEGACY_FILES.items():
+        dest_file = os.path.join(target_dir, dest_dir, src_name)
+        if os.path.islink(dest_file) or os.path.isfile(dest_file):
+            print(f"Removing legacy file {dest_file}")
+            os.remove(dest_file)
 
     print("Unpatching src/Makefile...")
     makefile_path = os.path.join(target_dir, "src/Makefile")
     os.system(f"sed {SED_IN_PLACE_ARG} 's, sensor_ldc1612_ng.c,,' '{makefile_path}'")
 
-    print("Unpatching klippy/extras/bed-mesh.py...")
+    # Legacy cleanup: remove old bed_mesh.py patch if present
     bed_mesh_path = os.path.join(target_dir, "klippy/extras/bed_mesh.py")
-    os.system(
-        f"sed {SED_IN_PLACE_ARG} 's,\"eddy\" in probe_name #eddy-ng,probe_name.startswith(\"probe_eddy_current\"),' '{bed_mesh_path}'"
-    )
+    if os.path.isfile(bed_mesh_path):
+        with open(bed_mesh_path, "r") as f:
+            content = f.read()
+        if '"eddy" in probe_name #eddy-ng' in content:
+            print("Reverting legacy bed_mesh.py patch...")
+            os.system(
+                f"sed {SED_IN_PLACE_ARG} 's,\"eddy\" in probe_name #eddy-ng,probe_name.startswith(\"probe_eddy_current\"),' '{bed_mesh_path}'"
+            )
     return
 
 
@@ -50,6 +74,7 @@ def install_kalico(target_dir: str, uninstall: bool, copy: bool):
     python_module_path = os.path.join(target_dir, "klippy/plugins/probe_eddy_ng")
     firmware_module_path = os.path.join(target_dir, "src/extras/eddy-ng")
 
+    # Clean up any old installation
     old_module_path = os.path.join(target_dir, "klippy/extras/probe_eddy_ng.py")
     if os.path.islink(old_module_path) or os.path.isfile(old_module_path):
         print("Uninstalling old installation...")
@@ -83,37 +108,52 @@ def install_kalico(target_dir: str, uninstall: bool, copy: bool):
     print("from the firmware extras in menuconfig.")
     print("(There's no need to run install again after eddy-ng updates.)")
 
+
 def install_klipper(target_dir: str, uninstall: bool, copy: bool):
     if uninstall:
         print("Uninstalling files...")
         uninstall_klipper(target_dir)
         return
 
+    # Clean up legacy single-file installation
+    for src_name, dest_dir in LEGACY_FILES.items():
+        dest_file = os.path.join(target_dir, dest_dir, src_name)
+        if os.path.islink(dest_file) or os.path.isfile(dest_file):
+            print(f"Removing legacy file {dest_file}")
+            os.remove(dest_file)
+
     print("Installing files...")
-    for src_file, dest_dir in FILES_TO_COPY.items():
-        src_path = os.path.join(get_script_dir(), src_file)
+    for src_name, (dest_dir, kind) in FILES_TO_INSTALL.items():
+        src_path = os.path.join(get_script_dir(), src_name)
         dest_path = os.path.join(target_dir, dest_dir)
-        dest_file = os.path.join(dest_path, os.path.basename(src_file))
+        dest_file = os.path.join(dest_path, os.path.basename(src_name))
+
+        # Clean existing
+        if os.path.islink(dest_file):
+            os.remove(dest_file)
+        elif os.path.isdir(dest_file):
+            shutil.rmtree(dest_file)
+        elif os.path.isfile(dest_file):
+            os.remove(dest_file)
 
         if copy:
-            print(f"Copying {src_file} to {dest_dir}/")
-            shutil.copyfile(src_file, dest_file)
+            print(f"Copying {src_name} to {dest_dir}/")
+            if kind == "dir":
+                shutil.copytree(src_path, dest_file)
+            else:
+                shutil.copyfile(src_path, dest_file)
         else:
             link_path = os.path.relpath(os.path.realpath(src_path), dest_path)
             print(f"Linking {link_path} to {dest_dir}/")
-            if os.path.islink(dest_file) or os.path.exists(dest_file):
-                os.remove(dest_file)
             os.symlink(link_path, dest_file)
 
     print("Patching src/Makefile...")
     makefile_path = os.path.join(target_dir, "src/Makefile")
     os.system(f"sed {SED_IN_PLACE_ARG} 's,sensor_ldc1612.c$,sensor_ldc1612.c sensor_ldc1612_ng.c,' '{makefile_path}'")
 
-    print("Patching klippy/extras/bed-mesh.py...")
-    bed_mesh_path = os.path.join(target_dir, "klippy/extras/bed_mesh.py")
-    os.system(
-        f"sed {SED_IN_PLACE_ARG} 's,probe_name.startswith(\"probe_eddy_current\"),\"eddy\" in probe_name #eddy-ng,' '{bed_mesh_path}'"
-    )
+    # Note: bed_mesh.py is no longer patched via sed. The runtime monkey-patch
+    # in probe_eddy_ng handles rapid_scan support automatically.
+    # Legacy patches are cleaned up during uninstall.
 
 
 def main():

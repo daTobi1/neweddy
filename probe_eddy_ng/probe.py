@@ -1133,8 +1133,12 @@ class ProbeEddy:
         if not self._z_homed():
             raise self._printer.command_error("Z axis must be homed before drive current optimization")
 
-        start_dc = gcmd.get_int("START_DC", 1, minval=0, maxval=31)
-        end_dc = gcmd.get_int("END_DC", 31, minval=start_dc, maxval=31)
+        # Smart default: scan around the current drive current instead of the full 1-31 range.
+        # This saves ~60% of scan time since most DCs outside this range produce no signal.
+        default_start = max(1, self._reg_drive_current - 5)
+        default_end = min(31, self._reg_drive_current + 7)
+        start_dc = gcmd.get_int("START_DC", default_start, minval=0, maxval=31)
+        end_dc = gcmd.get_int("END_DC", default_end, minval=start_dc, maxval=31)
         auto_save = gcmd.get_int("SAVE", 1) == 1
         debug = gcmd.get_int("DEBUG", 0) == 1
         tap_verify_count = gcmd.get_int("TAP_VERIFY", 5, minval=0, maxval=20)
@@ -2006,8 +2010,8 @@ class ProbeEddy:
         threshold_max = gcmd.get_float("MAX", default_max, above=threshold_start)
         tap_speed = gcmd.get_float("SPEED", self.params.tap_speed, above=0.0)
         screening_samples = gcmd.get_int("SCREENING_SAMPLES", 5, minval=3)
-        verification_samples = gcmd.get_int("VERIFICATION_SAMPLES", 10, minval=3, maxval=20)
-        req_range = gcmd.get_float("SAMPLE_RANGE", 0.010, above=0.0)
+        verification_samples = gcmd.get_int("VERIFICATION_SAMPLES", 5, minval=3, maxval=20)
+        req_range = gcmd.get_float("SAMPLE_RANGE", 0.050, above=0.0)
         model_name = gcmd.get("MODEL", "default")
 
         drive_current = self._sensor.get_drive_current()
@@ -2037,7 +2041,11 @@ class ProbeEddy:
         # Save the threshold to the config
         configfile = self._printer.lookup_object("configfile")
         configfile.set(self._full_name, "tap_threshold", f"{threshold:.1f}")
-        configfile.set(self._full_name, "tap_mode", mode)
+        # Only save tap_mode if it differs from the user's config value.
+        # Writing it unconditionally causes SAVE_CONFIG conflicts when
+        # tap_mode is already defined in an included config file.
+        if mode != self.params.tap_mode:
+            configfile.set(self._full_name, "tap_mode", mode)
         self.params.tap_threshold = threshold
         self.params.tap_mode = mode
 

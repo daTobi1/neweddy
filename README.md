@@ -790,23 +790,64 @@ CSV output columns: `time, frequency, temperature, position_x, position_y, posit
 
 ### First-Time Setup
 
+#### Option A: Guided Macros (recommended)
+
+Include the calibration macros in your printer.cfg:
+
+```ini
+[include calibrate_macros.cfg]
+```
+
+Copy the file from the eddy-ng repo to your config directory, or symlink it:
+
+```bash
+cp ~/eddy-ng/calibrate_macros.cfg ~/printer_data/config/
+```
+
+Then run each macro in order. After each `SAVE_CONFIG` restart, Klipper tells you which macro to run next:
+
+| Step | Macro | What it does | Time |
+|------|-------|-------------|------|
+| 1/4 | `EDDY_NG_CALIBRATE_1VON4` | Initial setup (manual Z positioning) | ~2 min |
+| 2/4 | `EDDY_NG_CALIBRATE_2VON4` | Optimize drive current | ~2 min |
+| 3/4 | `EDDY_NG_CALIBRATE_3VON4` | Calibrate tap threshold | ~2 min |
+| 4/4 | `EDDY_NG_CALIBRATE_4VON4` | Verify homing, tap, accuracy | ~1 min |
+
+> **Note:** Step 1 requires manual interaction (lowering the nozzle with `TESTZ`). Steps 2-4 are fully automatic.
+
+#### Option B: Automatic Script (via SSH)
+
+Run the full calibration from the command line. The script handles all Klipper restarts automatically and only pauses for the manual Z positioning in step 1:
+
+```bash
+~/eddy-ng/scripts/calibrate.sh
+```
+
+Or remotely:
+
+```bash
+ssh user@printer "~/eddy-ng/scripts/calibrate.sh"
+# Or specify a Moonraker URL:
+~/eddy-ng/scripts/calibrate.sh --url http://printer-ip:7125
+```
+
+#### Option C: Manual Commands
+
 1. Install eddy-ng and configure `printer.cfg`
-2. Home X and Y axes
-3. Run `PROBE_EDDY_NG_SETUP` -- interactive wizard guides through initial positioning
-4. Run `SAVE_CONFIG`
-5. Run `PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT` -- finds best drive current for homing and tap
-6. Run `SAVE_CONFIG`
-7. Run `PROBE_EDDY_NG_CALIBRATE_THRESHOLD` -- finds optimal tap sensitivity
-8. Run `SAVE_CONFIG`
+2. `G28 X Y`
+3. `PROBE_EDDY_NG_SETUP` -- lower nozzle with `TESTZ`, then `ACCEPT`
+4. `SAVE_CONFIG`
+5. `G28` then `PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT`
+6. `SAVE_CONFIG`
+7. `G28` then `PROBE_EDDY_NG_CALIBRATE_THRESHOLD`
+8. `SAVE_CONFIG`
 
-Alternatively, step 3 (`PROBE_EDDY_NG_SETUP`) already finds a working drive current. Use `OPTIMIZE_DRIVE_CURRENT` afterwards if you want the **best** one, not just the first that works.
+#### Optional Advanced Calibration
 
-**Optional advanced calibration:**
+After the basic setup:
 
-9. Run `PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1` -- measure and compensate Z backlash
-10. Run `SAVE_CONFIG`
-11. Run `PROBE_EDDY_NG_TEMPERATURE_CALIBRATE` -- calibrate temperature drift (requires scipy, takes 30-60 min)
-12. Run `SAVE_CONFIG`
+- `PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1` -- measure and compensate Z backlash, then `SAVE_CONFIG`
+- `PROBE_EDDY_NG_TEMPERATURE_CALIBRATE` -- calibrate temperature drift (requires scipy, takes 30-60 min), then `SAVE_CONFIG`
 
 ### Before Every Print
 

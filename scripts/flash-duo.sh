@@ -101,6 +101,12 @@ build_from_source() {
     local conn_choice="${PRESELECTED_CONN:-}"
     local can_freq="${PRESELECTED_CAN_FREQ:-}"
     local flash_offset="${PRESELECTED_FLASH_OFFSET:-0x10000100}"
+    local preselected_pins=0
+    if [[ -n "${PRESELECTED_CAN_TX:-}" ]]; then
+        CAN_TX_GPIO="$PRESELECTED_CAN_TX"
+        CAN_RX_GPIO="$PRESELECTED_CAN_RX"
+        preselected_pins=1
+    fi
 
     if [ -z "$conn_choice" ]; then
         # ── Step 1: Connection type ──
@@ -217,13 +223,29 @@ EOF
         2)
             info "Configuring for CAN bus (${can_freq} bit/s)..."
 
-            # CAN GPIO pins
-            echo ""
-            echo -e "CAN GPIO pins (BTT Eddy Duo default: TX=${BOLD}GPIO${CAN_TX_GPIO}${NC}, RX=${BOLD}GPIO${CAN_RX_GPIO}${NC})"
-            read -p "CAN TX GPIO pin [${CAN_TX_GPIO}]: " user_tx
-            read -p "CAN RX GPIO pin [${CAN_RX_GPIO}]: " user_rx
-            CAN_TX_GPIO="${user_tx:-$CAN_TX_GPIO}"
-            CAN_RX_GPIO="${user_rx:-$CAN_RX_GPIO}"
+            # CAN GPIO pins -- only ask if not already set
+            if [[ $preselected_pins -eq 0 ]]; then
+                echo ""
+                echo -e "${BOLD}CAN GPIO pins:${NC}"
+                echo ""
+                echo "  1) BTT Eddy Duo default (TX=GPIO1, RX=GPIO0)"
+                echo "  2) Custom"
+                echo ""
+                read -p "Choose [1-2]: " pin_choice
+
+                case "$pin_choice" in
+                    1) CAN_TX_GPIO=1; CAN_RX_GPIO=0 ;;
+                    2)
+                        read -p "CAN TX GPIO pin: " CAN_TX_GPIO
+                        read -p "CAN RX GPIO pin: " CAN_RX_GPIO
+                        if ! [[ "$CAN_TX_GPIO" =~ ^[0-9]+$ && "$CAN_RX_GPIO" =~ ^[0-9]+$ ]]; then
+                            error "Invalid GPIO pin numbers"
+                            exit 1
+                        fi
+                        ;;
+                    *) error "Invalid choice"; exit 1 ;;
+                esac
+            fi
 
             cat >> "$config_file" << EOF
 CONFIG_FLASH_APPLICATION_ADDRESS=${flash_offset}
@@ -396,6 +418,44 @@ select_prebuilt() {
         return
     fi
 
+    # ── Step 4: CAN GPIO pins (CAN only) ──
+    local custom_pins=0
+    if [[ "$conn_choice" == "2" ]]; then
+        echo ""
+        echo -e "${BOLD}CAN GPIO pins:${NC}"
+        echo ""
+        echo "  1) BTT Eddy Duo default (TX=GPIO1, RX=GPIO0)"
+        echo "  2) Custom"
+        echo ""
+        read -p "Choose [1-2]: " pin_choice
+
+        case "$pin_choice" in
+            1) CAN_TX_GPIO=1; CAN_RX_GPIO=0 ;;
+            2)
+                read -p "CAN TX GPIO pin: " CAN_TX_GPIO
+                read -p "CAN RX GPIO pin: " CAN_RX_GPIO
+                if ! [[ "$CAN_TX_GPIO" =~ ^[0-9]+$ && "$CAN_RX_GPIO" =~ ^[0-9]+$ ]]; then
+                    error "Invalid GPIO pin numbers"
+                    exit 1
+                fi
+                custom_pins=1
+                ;;
+            *) error "Invalid choice"; exit 1 ;;
+        esac
+
+        # Custom pins → must build from source
+        if [[ $custom_pins -eq 1 ]]; then
+            info "Custom CAN pins -- building from source required."
+            PRESELECTED_CONN="$conn_choice"
+            PRESELECTED_CAN_FREQ="$can_freq"
+            PRESELECTED_FLASH_OFFSET="$flash_offset"
+            PRESELECTED_CAN_TX="$CAN_TX_GPIO"
+            PRESELECTED_CAN_RX="$CAN_RX_GPIO"
+            build_from_source
+            return
+        fi
+    fi
+
     # ── Select pre-built firmware file ──
     if [[ "$conn_choice" == "1" ]]; then
         FW_FILE="eddy-duo-usb.uf2"
@@ -414,22 +474,6 @@ select_prebuilt() {
             fi
         fi
 
-        # Show CAN pin info for pre-built firmware
-        echo ""
-        info "Pre-built CAN firmware uses BTT Eddy Duo default pins:"
-        echo -e "  CAN TX: ${BOLD}GPIO1${NC}"
-        echo -e "  CAN RX: ${BOLD}GPIO0${NC}"
-        echo ""
-        echo "If your Eddy Duo uses different CAN pins, choose 'Build from source'."
-        read -p "Continue with pre-built firmware? [Y/n]: " confirm
-        if [[ "$confirm" =~ ^[nN] ]]; then
-            PRESELECTED_CONN="$conn_choice"
-            PRESELECTED_CAN_FREQ="$can_freq"
-            PRESELECTED_FLASH_OFFSET="$flash_offset"
-            build_from_source
-            return
-        fi
-
         if [[ $use_katapult -eq 1 ]]; then
             warn "Using Katapult bootloader offset: $flash_offset"
             warn "Make sure Katapult is already flashed on the RP2040."
@@ -445,6 +489,8 @@ select_prebuilt() {
         local freq_display="500k"
         [[ "$can_freq" == "1000000" ]] && freq_display="1M"
         echo -e "  Connection:    ${BOLD}CAN bus ${freq_display}${NC}"
+        echo -e "  CAN TX pin:    ${BOLD}GPIO${CAN_TX_GPIO}${NC}"
+        echo -e "  CAN RX pin:    ${BOLD}GPIO${CAN_RX_GPIO}${NC}"
     fi
     echo -e "  Bootloader:    ${BOLD}$([ $use_katapult -eq 1 ] && echo "Katapult ($flash_offset)" || echo "none")${NC}"
     echo -e "  Firmware:      ${BOLD}${FW_FILE}${NC}"
@@ -796,6 +842,8 @@ CAN_IFACE=""
 PRESELECTED_CONN=""
 PRESELECTED_CAN_FREQ=""
 PRESELECTED_FLASH_OFFSET=""
+PRESELECTED_CAN_TX=""
+PRESELECTED_CAN_RX=""
 
 if [ $BUILD_MODE -eq 1 ]; then
     build_from_source

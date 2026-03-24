@@ -2700,128 +2700,197 @@ class ProbeEddy:
     def cmd_AXIS_TWIST_CALIBRATE(self, gcmd: GCodeCommand):
         """Calibrate axis twist compensation using tap.
 
-        Taps at multiple points along the X axis to measure Z variation
+        Taps at multiple points along X or Y axis to measure Z variation
         caused by gantry twist, then saves the compensation values to
-        [axis_twist_compensation] z_compensations.
+        [axis_twist_compensation].
+
+        AXIS=X (default): probes along X at constant Y
+        AXIS=Y: probes along Y at constant X
+        AXIS=BOTH: runs X first, then Y, saves both
         """
         if not self._z_homed():
             raise self._printer.command_error("Must home all axes first (G28)")
 
-        # Get bed mesh boundaries for defaults
-        start_x = end_x = calibrate_y = None
+        axis = gcmd.get("AXIS", "X").upper()
+        if axis not in ("X", "Y", "BOTH"):
+            raise self._printer.command_error(
+                f"AXIS must be X, Y, or BOTH (got: {axis})"
+            )
+        sample_count = gcmd.get_int("SAMPLE_COUNT", 7, minval=3, maxval=20)
+        samples_per_point = gcmd.get_int("SAMPLES", self.params.tap_samples, minval=1)
+
+        axes_to_run = ["X", "Y"] if axis == "BOTH" else [axis]
+        all_results = {}
+
+        for current_axis in axes_to_run:
+            result = self._run_axis_twist_for_axis(
+                gcmd, current_axis, sample_count, samples_per_point
+            )
+            all_results[current_axis] = result
+
+        # Save to config
+        configfile = self._printer.lookup_object("configfile")
+
+        if "X" in all_results:
+            r = all_results["X"]
+            comp_str = ", ".join(f"{c:.6f}" for c in r["compensations"])
+            configfile.set("axis_twist_compensation", "z_compensations", comp_str)
+            configfile.set("axis_twist_compensation",
+                           "calibrate_start_x", f"{r['start']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "calibrate_end_x", f"{r['end']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "calibrate_y", f"{r['fixed_pos']:.1f}")
+
+        if "Y" in all_results:
+            r = all_results["Y"]
+            comp_str = ", ".join(f"{c:.6f}" for c in r["compensations"])
+            configfile.set("axis_twist_compensation",
+                           "zy_compensations", comp_str)
+            configfile.set("axis_twist_compensation",
+                           "calibrate_start_y", f"{r['start']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "calibrate_end_y", f"{r['end']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "calibrate_x", f"{r['fixed_pos']:.1f}")
+
+        self._log_msg(
+            "\nAxis twist compensation saved.\n"
+            "Use SAVE_CONFIG to persist."
+        )
+
+    def _run_axis_twist_for_axis(
+        self, gcmd: GCodeCommand, axis: str,
+        sample_count: int, samples_per_point: int
+    ) -> dict:
+        """Run axis twist calibration for a single axis (X or Y)."""
+        center_x, center_y = self._get_bed_center()
+
+        # Determine start/end and fixed position for this axis
+        start = end = fixed_pos = None
+
+        # Try to read from [axis_twist_compensation] config
         try:
             atc = self._printer.lookup_object("axis_twist_compensation", None)
             if atc is not None:
-                if hasattr(atc, 'calibrate_start_x'):
-                    start_x = atc.calibrate_start_x
-                if hasattr(atc, 'calibrate_end_x'):
-                    end_x = atc.calibrate_end_x
-                if hasattr(atc, 'calibrate_y'):
-                    calibrate_y = atc.calibrate_y
+                if axis == "X":
+                    if hasattr(atc, 'calibrate_start_x'):
+                        start = atc.calibrate_start_x
+                    if hasattr(atc, 'calibrate_end_x'):
+                        end = atc.calibrate_end_x
+                    if hasattr(atc, 'calibrate_y'):
+                        fixed_pos = atc.calibrate_y
+                else:
+                    if hasattr(atc, 'calibrate_start_y'):
+                        start = atc.calibrate_start_y
+                    if hasattr(atc, 'calibrate_end_y'):
+                        end = atc.calibrate_end_y
+                    if hasattr(atc, 'calibrate_x'):
+                        fixed_pos = atc.calibrate_x
         except Exception:
             pass
 
         # Fall back to bed_mesh boundaries
-        if start_x is None or end_x is None:
+        if start is None or end is None:
             try:
                 bm = self._printer.lookup_object("bed_mesh")
                 bmc = bm.bmc
                 if hasattr(bmc, 'mesh_min') and hasattr(bmc, 'mesh_max'):
-                    start_x = start_x or bmc.mesh_min[0]
-                    end_x = end_x or bmc.mesh_max[0]
+                    idx = 0 if axis == "X" else 1
+                    start = start or bmc.mesh_min[idx]
+                    end = end or bmc.mesh_max[idx]
             except Exception:
                 pass
 
-        if calibrate_y is None:
-            _, calibrate_y = self._get_bed_center()
+        # Fixed position defaults to bed center on the other axis
+        if fixed_pos is None:
+            fixed_pos = center_y if axis == "X" else center_x
 
         # Fall back to kinematics range
-        if start_x is None or end_x is None:
+        if start is None or end is None:
             th = self._printer.lookup_object("toolhead")
             kin = th.get_kinematics()
-            xrange = kin.rails[0].get_range()
-            start_x = start_x or (xrange[0] + 20.0)
-            end_x = end_x or (xrange[1] - 20.0)
+            rail_idx = 0 if axis == "X" else 1
+            rail_range = kin.rails[rail_idx].get_range()
+            start = start or (rail_range[0] + 20.0)
+            end = end or (rail_range[1] - 20.0)
 
-        start_x = gcmd.get_float("START_X", start_x)
-        end_x = gcmd.get_float("END_X", end_x)
-        calibrate_y = gcmd.get_float("Y", calibrate_y)
-        sample_count = gcmd.get_int("SAMPLE_COUNT", 7, minval=3, maxval=20)
-        samples_per_point = gcmd.get_int("SAMPLES", self.params.tap_samples, minval=1)
+        # Allow GCode parameter overrides
+        if axis == "X":
+            start = gcmd.get_float("START_X", start)
+            end = gcmd.get_float("END_X", end)
+            fixed_pos = gcmd.get_float("Y", fixed_pos)
+        else:
+            start = gcmd.get_float("START_Y", start)
+            end = gcmd.get_float("END_Y", end)
+            fixed_pos = gcmd.get_float("X", fixed_pos)
 
-        if end_x <= start_x:
+        if end <= start:
             raise self._printer.command_error(
-                f"END_X ({end_x}) must be greater than START_X ({start_x})"
+                f"END_{axis} ({end}) must be greater than START_{axis} ({start})"
             )
 
-        # Account for probe offset — we need the probe over the points,
-        # so the nozzle moves to (point_x - x_offset)
-        x_offset = self.params.x_offset
-        y_offset = self.params.y_offset
+        # Generate evenly spaced positions
+        interval = (end - start) / (sample_count - 1)
+        points = [start + i * interval for i in range(sample_count)]
 
-        # Generate evenly spaced X positions
-        interval = (end_x - start_x) / (sample_count - 1)
-        points_x = [start_x + i * interval for i in range(sample_count)]
-
+        fixed_label = "Y" if axis == "X" else "X"
         self._log_msg(
-            f"Axis twist calibration: {sample_count} points from "
-            f"X={start_x:.0f} to X={end_x:.0f} at Y={calibrate_y:.0f}"
+            f"\n{'='*50}\n"
+            f"Axis twist calibration ({axis}): {sample_count} points from "
+            f"{axis}={start:.0f} to {axis}={end:.0f} at "
+            f"{fixed_label}={fixed_pos:.0f}"
         )
-        self._log_msg(f"Probe offset: X={x_offset:.1f} Y={y_offset:.1f}")
 
         toolhead = self._toolhead
         tap_results = []
 
-        # Save and restore drive current
+        # Build tap config once
+        tapcfg = ProbeEddy.TapConfig(
+            mode=self.params.tap_mode,
+            threshold=self.params.tap_threshold,
+        )
+        if tapcfg.mode == "butter":
+            if self.params.is_default_butter_config() and self._sensor._data_rate == 250:
+                tapcfg.sos = [
+                    [0.046131802093312926, 0.09226360418662585, 0.046131802093312926, 1.0, -1.3297767184682712, 0.5693902189294331],
+                    [1.0, -2.0, 1.0, 1.0, -1.845000600983779, 0.8637525213328747],
+                ]
+            elif self.params.is_default_butter_config() and self._sensor._data_rate == 500:
+                tapcfg.sos = [
+                    [0.013359200027856505, 0.02671840005571301, 0.013359200027856505, 1.0, -1.686278256753083, 0.753714473246724],
+                    [1.0, -2.0, 1.0, 1.0, -1.9250515947328444, 0.9299234737648037],
+                ]
+            elif scipy:
+                tapcfg.sos = scipy.signal.butter(
+                    self.params.tap_butter_order,
+                    [self.params.tap_butter_lowcut, self.params.tap_butter_highcut],
+                    btype="bandpass",
+                    fs=self._sensor._data_rate,
+                    output="sos",
+                ).tolist()
+
         orig_drive_current = self._sensor.get_drive_current()
         try:
-            for i, px in enumerate(points_x):
-                # Move nozzle so that the nozzle (not probe) is over the point
-                nozzle_x = px
-                nozzle_y = calibrate_y
+            self._sensor.set_drive_current(self._tap_drive_current)
+
+            for i, pos in enumerate(points):
+                nozzle_x = pos if axis == "X" else fixed_pos
+                nozzle_y = fixed_pos if axis == "X" else pos
+
                 self._log_msg(
-                    f"Point {i+1}/{sample_count}: X={px:.1f} "
+                    f"Point {i+1}/{sample_count}: {axis}={pos:.1f} "
                     f"(nozzle at {nozzle_x:.1f}, {nozzle_y:.1f})"
                 )
 
-                # Move to position at safe height
                 toolhead.manual_move(
                     [nozzle_x, nozzle_y, self.params.tap_start_z + 2.0],
                     self.params.move_speed
                 )
                 toolhead.wait_moves()
 
-                # Do tap at this position
-                # We call cmd_TAP_next with a custom gcmd that overrides SAMPLES
-                # and HOME_Z=0 (don't reset Z origin at each point)
                 point_results = []
                 max_attempts = samples_per_point + 2
-                self._sensor.set_drive_current(
-                    self._tap_drive_current
-                )
-                tapcfg = ProbeEddy.TapConfig(
-                    mode=self.params.tap_mode,
-                    threshold=self.params.tap_threshold,
-                )
-                if tapcfg.mode == "butter":
-                    if self.params.is_default_butter_config() and self._sensor._data_rate == 250:
-                        tapcfg.sos = [
-                            [0.046131802093312926, 0.09226360418662585, 0.046131802093312926, 1.0, -1.3297767184682712, 0.5693902189294331],
-                            [1.0, -2.0, 1.0, 1.0, -1.845000600983779, 0.8637525213328747],
-                        ]
-                    elif self.params.is_default_butter_config() and self._sensor._data_rate == 500:
-                        tapcfg.sos = [
-                            [0.013359200027856505, 0.02671840005571301, 0.013359200027856505, 1.0, -1.686278256753083, 0.753714473246724],
-                            [1.0, -2.0, 1.0, 1.0, -1.9250515947328444, 0.9299234737648037],
-                        ]
-                    elif scipy:
-                        tapcfg.sos = scipy.signal.butter(
-                            self.params.tap_butter_order,
-                            [self.params.tap_butter_lowcut, self.params.tap_butter_highcut],
-                            btype="bandpass",
-                            fs=self._sensor._data_rate,
-                            output="sos",
-                        ).tolist()
 
                 for attempt in range(max_attempts):
                     tap = self.do_one_tap(
@@ -2832,7 +2901,9 @@ class ProbeEddy:
                         tapcfg=tapcfg,
                     )
                     if tap.error:
-                        self._log_msg(f"  Tap attempt {attempt+1} failed: {tap.error}")
+                        self._log_msg(
+                            f"  Tap attempt {attempt+1} failed: {tap.error}"
+                        )
                         continue
                     point_results.append(tap.probe_z)
                     if len(point_results) >= samples_per_point:
@@ -2840,11 +2911,13 @@ class ProbeEddy:
 
                 if len(point_results) < 1:
                     raise self._printer.command_error(
-                        f"All tap attempts failed at point {i+1} (X={px:.1f})"
+                        f"All tap attempts failed at point {i+1} "
+                        f"({axis}={pos:.1f})"
                     )
 
                 median_z = float(np.median(point_results))
-                stddev = float(np.std(point_results)) if len(point_results) > 1 else 0.0
+                stddev = (float(np.std(point_results))
+                          if len(point_results) > 1 else 0.0)
                 self._log_msg(
                     f"  Result: Z={median_z:.4f} (stddev={stddev:.4f}, "
                     f"{len(point_results)} samples)"
@@ -2854,7 +2927,6 @@ class ProbeEddy:
         finally:
             self._sensor.set_drive_current(orig_drive_current)
             self._endstop_wrapper.tap_config = None
-            # Raise to safe height
             toolhead.manual_move(
                 [None, None, self.params.tap_start_z + 5.0],
                 self.params.lift_speed
@@ -2864,25 +2936,21 @@ class ProbeEddy:
         avg_z = float(np.mean(tap_results))
         compensations = [avg_z - z for z in tap_results]
 
-        self._log_msg("\nAxis twist compensation results:")
-        for i, (px, comp) in enumerate(zip(points_x, compensations)):
-            self._log_msg(f"  X={px:.0f}: {comp:+.4f} mm")
+        self._log_msg(f"\nAxis twist compensation results ({axis}):")
+        for i, (pos, comp) in enumerate(zip(points, compensations)):
+            self._log_msg(f"  {axis}={pos:.0f}: {comp:+.4f} mm")
 
         total_twist = max(compensations) - min(compensations)
-        self._log_msg(f"\nTotal twist: {total_twist:.4f} mm")
+        self._log_msg(f"Total {axis} twist: {total_twist:.4f} mm")
 
-        # Save to config
-        comp_str = ", ".join(f"{c:.6f}" for c in compensations)
-        configfile = self._printer.lookup_object("configfile")
-        configfile.set("axis_twist_compensation", "z_compensations", comp_str)
-        configfile.set("axis_twist_compensation", "calibrate_start_x", f"{start_x:.1f}")
-        configfile.set("axis_twist_compensation", "calibrate_end_x", f"{end_x:.1f}")
-        configfile.set("axis_twist_compensation", "calibrate_y", f"{calibrate_y:.1f}")
-
-        self._log_msg(
-            "\nAxis twist compensation saved.\n"
-            "Use SAVE_CONFIG to persist."
-        )
+        return {
+            "axis": axis,
+            "start": start,
+            "end": end,
+            "fixed_pos": fixed_pos,
+            "compensations": compensations,
+            "total_twist": total_twist,
+        }
 
     def _wait_for_temperature(self, target: float, direction: str = "heat",
                               timeout: float = 600.0):

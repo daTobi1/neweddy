@@ -756,11 +756,21 @@ class ProbeEddy:
             # at the right place
             self._z_hop()
 
-        # Now reset the axis so that we have a full range to calibrate with
+        # Move nozzle to bed center before starting manual probe
         th = self._printer.lookup_object("toolhead")
+        kin = th.get_kinematics()
+        xrange = kin.rails[0].get_range()
+        yrange = kin.rails[1].get_range()
+        center_x = (xrange[0] + xrange[1]) / 2.0
+        center_y = (yrange[0] + yrange[1]) / 2.0
+        self._log_msg(f"setup: moving nozzle to bed center ({center_x:.0f}, {center_y:.0f})")
+        th.manual_move([center_x, center_y, None], self.params.move_speed)
+        th.wait_moves()
+
+        # Now reset the axis so that we have a full range to calibrate with
         th_pos = th.get_position()
         # XXX This is proably not correct for some printers?
-        zrange = th.get_kinematics().rails[2].get_range()
+        zrange = kin.rails[2].get_range()
         th_pos[2] = zrange[1] - 20.0
         self._set_toolhead_position(th_pos, [2])
 

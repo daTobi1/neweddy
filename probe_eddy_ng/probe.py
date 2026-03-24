@@ -309,6 +309,11 @@ class ProbeEddy:
             "Estimate Z-axis backlash using statistical analysis",
         )
         gcode.register_command(
+            "PROBE_EDDY_NG_AXIS_TWIST_CALIBRATE",
+            self.cmd_AXIS_TWIST_CALIBRATE,
+            "Calibrate axis twist compensation using tap (fully automatic)",
+        )
+        gcode.register_command(
             "PROBE_EDDY_NG_STREAM",
             self.cmd_STREAM,
             "Manage data streaming (ACTION=START|STOP|CANCEL|STATUS)",
@@ -318,6 +323,32 @@ class ProbeEddy:
             self.cmd_MODEL,
             "Manage named calibration models (ACTION=SAVE|LOAD|LIST|DELETE)",
         )
+
+    def _get_bed_center(self) -> Tuple[float, float]:
+        """Get bed center coordinates.
+
+        Uses bed_mesh zero_reference_position if available, falls back to
+        mesh_min/mesh_max midpoint, then kinematics range midpoint.
+        """
+        th = self._printer.lookup_object("toolhead")
+        kin = th.get_kinematics()
+        center_x = center_y = None
+        try:
+            bm = self._printer.lookup_object("bed_mesh")
+            bmc = bm.bmc
+            if hasattr(bmc, 'zero_reference_pos') and bmc.zero_reference_pos is not None:
+                center_x, center_y = bmc.zero_reference_pos
+            elif hasattr(bmc, 'mesh_min') and hasattr(bmc, 'mesh_max'):
+                center_x = (bmc.mesh_min[0] + bmc.mesh_max[0]) / 2.0
+                center_y = (bmc.mesh_min[1] + bmc.mesh_max[1]) / 2.0
+        except Exception:
+            pass
+        if center_x is None or center_y is None:
+            xrange = kin.rails[0].get_range()
+            yrange = kin.rails[1].get_range()
+            center_x = (xrange[0] + xrange[1]) / 2.0
+            center_y = (yrange[0] + yrange[1]) / 2.0
+        return float(center_x), float(center_y)
 
     def _handle_command_error(self, gcmd=None):
         try:
@@ -757,26 +788,8 @@ class ProbeEddy:
             self._z_hop()
 
         # Move nozzle to bed center before starting manual probe.
-        # Use bed_mesh zero_reference_position or mesh midpoint if available,
-        # otherwise fall back to kinematics range midpoint.
         th = self._printer.lookup_object("toolhead")
-        kin = th.get_kinematics()
-        center_x = center_y = None
-        try:
-            bm = self._printer.lookup_object("bed_mesh")
-            bmc = bm.bmc
-            if hasattr(bmc, 'zero_reference_pos') and bmc.zero_reference_pos is not None:
-                center_x, center_y = bmc.zero_reference_pos
-            elif hasattr(bmc, 'mesh_min') and hasattr(bmc, 'mesh_max'):
-                center_x = (bmc.mesh_min[0] + bmc.mesh_max[0]) / 2.0
-                center_y = (bmc.mesh_min[1] + bmc.mesh_max[1]) / 2.0
-        except Exception:
-            pass
-        if center_x is None or center_y is None:
-            xrange = kin.rails[0].get_range()
-            yrange = kin.rails[1].get_range()
-            center_x = (xrange[0] + xrange[1]) / 2.0
-            center_y = (yrange[0] + yrange[1]) / 2.0
+        center_x, center_y = self._get_bed_center()
         self._log_msg(f"setup: moving nozzle to bed center ({center_x:.0f}, {center_y:.0f})")
         th.manual_move([center_x, center_y, None], self.params.move_speed)
         th.wait_moves()
@@ -2591,25 +2604,7 @@ class ProbeEddy:
         data_per_height: dict = {}
 
         # Move probe to bed center before starting.
-        # Use bed_mesh zero_reference_position or mesh midpoint if available,
-        # otherwise fall back to kinematics range midpoint.
-        kin = toolhead.get_kinematics()
-        center_x = center_y = None
-        try:
-            bm = self._printer.lookup_object("bed_mesh")
-            bmc = bm.bmc
-            if hasattr(bmc, 'zero_reference_pos') and bmc.zero_reference_pos is not None:
-                center_x, center_y = bmc.zero_reference_pos
-            elif hasattr(bmc, 'mesh_min') and hasattr(bmc, 'mesh_max'):
-                center_x = (bmc.mesh_min[0] + bmc.mesh_max[0]) / 2.0
-                center_y = (bmc.mesh_min[1] + bmc.mesh_max[1]) / 2.0
-        except Exception:
-            pass
-        if center_x is None or center_y is None:
-            xrange = kin.rails[0].get_range()
-            yrange = kin.rails[1].get_range()
-            center_x = (xrange[0] + xrange[1]) / 2.0
-            center_y = (yrange[0] + yrange[1]) / 2.0
+        center_x, center_y = self._get_bed_center()
         self._log_msg(
             f"Moving probe to bed center ({center_x:.0f}, {center_y:.0f})"
         )
@@ -2699,6 +2694,193 @@ class ProbeEddy:
         save_temp_comp_to_config(configfile, self._full_name, coeff)
         self._log_msg(
             "Temperature compensation model saved.\n"
+            "Use SAVE_CONFIG to persist."
+        )
+
+    def cmd_AXIS_TWIST_CALIBRATE(self, gcmd: GCodeCommand):
+        """Calibrate axis twist compensation using tap.
+
+        Taps at multiple points along the X axis to measure Z variation
+        caused by gantry twist, then saves the compensation values to
+        [axis_twist_compensation] z_compensations.
+        """
+        if not self._z_homed():
+            raise self._printer.command_error("Must home all axes first (G28)")
+
+        # Get bed mesh boundaries for defaults
+        start_x = end_x = calibrate_y = None
+        try:
+            atc = self._printer.lookup_object("axis_twist_compensation", None)
+            if atc is not None:
+                if hasattr(atc, 'calibrate_start_x'):
+                    start_x = atc.calibrate_start_x
+                if hasattr(atc, 'calibrate_end_x'):
+                    end_x = atc.calibrate_end_x
+                if hasattr(atc, 'calibrate_y'):
+                    calibrate_y = atc.calibrate_y
+        except Exception:
+            pass
+
+        # Fall back to bed_mesh boundaries
+        if start_x is None or end_x is None:
+            try:
+                bm = self._printer.lookup_object("bed_mesh")
+                bmc = bm.bmc
+                if hasattr(bmc, 'mesh_min') and hasattr(bmc, 'mesh_max'):
+                    start_x = start_x or bmc.mesh_min[0]
+                    end_x = end_x or bmc.mesh_max[0]
+            except Exception:
+                pass
+
+        if calibrate_y is None:
+            _, calibrate_y = self._get_bed_center()
+
+        # Fall back to kinematics range
+        if start_x is None or end_x is None:
+            th = self._printer.lookup_object("toolhead")
+            kin = th.get_kinematics()
+            xrange = kin.rails[0].get_range()
+            start_x = start_x or (xrange[0] + 20.0)
+            end_x = end_x or (xrange[1] - 20.0)
+
+        start_x = gcmd.get_float("START_X", start_x)
+        end_x = gcmd.get_float("END_X", end_x)
+        calibrate_y = gcmd.get_float("Y", calibrate_y)
+        sample_count = gcmd.get_int("SAMPLE_COUNT", 7, minval=3, maxval=20)
+        samples_per_point = gcmd.get_int("SAMPLES", self.params.tap_samples, minval=1)
+
+        if end_x <= start_x:
+            raise self._printer.command_error(
+                f"END_X ({end_x}) must be greater than START_X ({start_x})"
+            )
+
+        # Account for probe offset — we need the probe over the points,
+        # so the nozzle moves to (point_x - x_offset)
+        x_offset = self.params.x_offset
+        y_offset = self.params.y_offset
+
+        # Generate evenly spaced X positions
+        interval = (end_x - start_x) / (sample_count - 1)
+        points_x = [start_x + i * interval for i in range(sample_count)]
+
+        self._log_msg(
+            f"Axis twist calibration: {sample_count} points from "
+            f"X={start_x:.0f} to X={end_x:.0f} at Y={calibrate_y:.0f}"
+        )
+        self._log_msg(f"Probe offset: X={x_offset:.1f} Y={y_offset:.1f}")
+
+        toolhead = self._toolhead
+        tap_results = []
+
+        # Save and restore drive current
+        orig_drive_current = self._sensor.get_drive_current()
+        try:
+            for i, px in enumerate(points_x):
+                # Move nozzle so that the nozzle (not probe) is over the point
+                nozzle_x = px
+                nozzle_y = calibrate_y
+                self._log_msg(
+                    f"Point {i+1}/{sample_count}: X={px:.1f} "
+                    f"(nozzle at {nozzle_x:.1f}, {nozzle_y:.1f})"
+                )
+
+                # Move to position at safe height
+                toolhead.manual_move(
+                    [nozzle_x, nozzle_y, self.params.tap_start_z + 2.0],
+                    self.params.move_speed
+                )
+                toolhead.wait_moves()
+
+                # Do tap at this position
+                # We call cmd_TAP_next with a custom gcmd that overrides SAMPLES
+                # and HOME_Z=0 (don't reset Z origin at each point)
+                point_results = []
+                max_attempts = samples_per_point + 2
+                self._sensor.set_drive_current(
+                    self._tap_drive_current
+                )
+                tapcfg = ProbeEddy.TapConfig(
+                    mode=self.params.tap_mode,
+                    threshold=self.params.tap_threshold,
+                )
+                if tapcfg.mode == "butter":
+                    if self.params.is_default_butter_config() and self._sensor._data_rate == 250:
+                        tapcfg.sos = [
+                            [0.046131802093312926, 0.09226360418662585, 0.046131802093312926, 1.0, -1.3297767184682712, 0.5693902189294331],
+                            [1.0, -2.0, 1.0, 1.0, -1.845000600983779, 0.8637525213328747],
+                        ]
+                    elif self.params.is_default_butter_config() and self._sensor._data_rate == 500:
+                        tapcfg.sos = [
+                            [0.013359200027856505, 0.02671840005571301, 0.013359200027856505, 1.0, -1.686278256753083, 0.753714473246724],
+                            [1.0, -2.0, 1.0, 1.0, -1.9250515947328444, 0.9299234737648037],
+                        ]
+                    elif scipy:
+                        tapcfg.sos = scipy.signal.butter(
+                            self.params.tap_butter_order,
+                            [self.params.tap_butter_lowcut, self.params.tap_butter_highcut],
+                            btype="bandpass",
+                            fs=self._sensor._data_rate,
+                            output="sos",
+                        ).tolist()
+
+                for attempt in range(max_attempts):
+                    tap = self.do_one_tap(
+                        start_z=self.params.tap_start_z,
+                        target_z=self.params.tap_target_z,
+                        tap_speed=self.params.tap_speed,
+                        lift_speed=self.params.lift_speed,
+                        tapcfg=tapcfg,
+                    )
+                    if tap.error:
+                        self._log_msg(f"  Tap attempt {attempt+1} failed: {tap.error}")
+                        continue
+                    point_results.append(tap.probe_z)
+                    if len(point_results) >= samples_per_point:
+                        break
+
+                if len(point_results) < 1:
+                    raise self._printer.command_error(
+                        f"All tap attempts failed at point {i+1} (X={px:.1f})"
+                    )
+
+                median_z = float(np.median(point_results))
+                stddev = float(np.std(point_results)) if len(point_results) > 1 else 0.0
+                self._log_msg(
+                    f"  Result: Z={median_z:.4f} (stddev={stddev:.4f}, "
+                    f"{len(point_results)} samples)"
+                )
+                tap_results.append(median_z)
+
+        finally:
+            self._sensor.set_drive_current(orig_drive_current)
+            self._endstop_wrapper.tap_config = None
+            # Raise to safe height
+            toolhead.manual_move(
+                [None, None, self.params.tap_start_z + 5.0],
+                self.params.lift_speed
+            )
+
+        # Compute compensations: normalize to average
+        avg_z = float(np.mean(tap_results))
+        compensations = [avg_z - z for z in tap_results]
+
+        self._log_msg("\nAxis twist compensation results:")
+        for i, (px, comp) in enumerate(zip(points_x, compensations)):
+            self._log_msg(f"  X={px:.0f}: {comp:+.4f} mm")
+
+        total_twist = max(compensations) - min(compensations)
+        self._log_msg(f"\nTotal twist: {total_twist:.4f} mm")
+
+        # Save to config
+        comp_str = ", ".join(f"{c:.6f}" for c in compensations)
+        configfile = self._printer.lookup_object("configfile")
+        configfile.set("axis_twist_compensation", "z_compensations", comp_str)
+        configfile.set("axis_twist_compensation", "calibrate_start_x", f"{start_x:.1f}")
+        configfile.set("axis_twist_compensation", "calibrate_end_x", f"{end_x:.1f}")
+        configfile.set("axis_twist_compensation", "calibrate_y", f"{calibrate_y:.1f}")
+
+        self._log_msg(
+            "\nAxis twist compensation saved.\n"
             "Use SAVE_CONFIG to persist."
         )
 

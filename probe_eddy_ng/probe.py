@@ -2957,11 +2957,24 @@ class ProbeEddy:
         """Wait for coil temperature to reach target."""
         reactor = self._reactor
         start = time.time()
+        none_count = 0
         while True:
-            reactor.pause(reactor.monotonic() + 1.0)
+            reactor.pause(reactor.monotonic() + 2.0)
             temp = self._get_coil_temperature()
             if temp is None:
+                none_count += 1
+                if none_count > 30:
+                    raise self._printer.command_error(
+                        "Temperature sensor not available. "
+                        "Check [temperature_sensor] configuration."
+                    )
                 continue
+
+            none_count = 0
+            self._log_debug(
+                f"_wait_for_temperature: {temp:.1f}C "
+                f"(target: {target:.0f}C {direction})"
+            )
 
             if direction == "heat" and temp >= target:
                 return
@@ -2975,13 +2988,34 @@ class ProbeEddy:
                 )
 
     def _get_coil_temperature(self) -> Optional[float]:
-        """Get current coil/bed temperature if available."""
+        """Get current bed temperature for temperature calibration.
+
+        Tries heater_bed first, then falls back to any temperature_sensor
+        objects that might provide bed temperature.
+        """
+        eventtime = self._reactor.monotonic()
+        # Try heater_bed
         try:
             heater = self._printer.lookup_object("heater_bed", None)
             if heater is not None:
-                return heater.get_temp(self._reactor.monotonic())[0]
-        except Exception:
-            pass
+                temp, _ = heater.get_temp(eventtime)
+                if temp is not None and temp > 0:
+                    return float(temp)
+        except Exception as e:
+            logging.debug(f"_get_coil_temperature heater_bed failed: {e}")
+
+        # Try heaters module (covers renamed heaters)
+        try:
+            pheaters = self._printer.lookup_object("heaters", None)
+            if pheaters is not None:
+                for name, heater in pheaters.heaters.items():
+                    if "bed" in name.lower():
+                        temp, _ = heater.get_temp(eventtime)
+                        if temp is not None and temp > 0:
+                            return float(temp)
+        except Exception as e:
+            logging.debug(f"_get_coil_temperature heaters failed: {e}")
+
         return None
 
     def cmd_MODEL(self, gcmd: GCodeCommand):

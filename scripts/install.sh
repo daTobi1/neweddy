@@ -2,9 +2,10 @@
 #
 # eddy-ng interactive installer
 #
-# Supports two sensor types:
+# Supports three sensor types:
 #   1) Eddy Duo (RP2040) - patchless: pip package + pre-built firmware
-#   2) Other (Eddy Coil, etc.) - traditional: pip + Klipper source patching
+#   2) Cartographer (RP2040) - patchless: pip package (no firmware flash)
+#   3) Other (Eddy Coil, etc.) - traditional: pip + Klipper source patching
 #
 set -e
 
@@ -38,6 +39,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --duo              Select Eddy Duo sensor (patchless install)"
+    echo "  --cartographer     Select Cartographer sensor (patchless install)"
     echo "  --other            Select other Eddy sensor (traditional install)"
     echo "  -e, --klippy-env   Klippy virtualenv directory"
     echo "  -u, --uninstall    Uninstall eddy-ng"
@@ -48,6 +50,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --duo)         SENSOR_TYPE="duo"; shift ;;
+        --cartographer) SENSOR_TYPE="cartographer"; shift ;;
         --other)       SENSOR_TYPE="other"; shift ;;
         -e|--klippy-env) KLIPPY_ENV="$2"; shift 2 ;;
         -u|--uninstall)  UNINSTALL=1; shift ;;
@@ -308,6 +311,24 @@ install_duo() {
     echo "  3. Restart Klipper: sudo systemctl restart klipper"
 }
 
+install_cartographer() {
+    header "Installing eddy-ng for Cartographer (patchless)"
+
+    remove_legacy
+    install_pip_package
+    create_scaffolding
+
+    success "Python plugin installed (no Klipper source patching needed)"
+
+    header "Done"
+    echo -e "${GREEN}eddy-ng installed for Cartographer!${NC}"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Set sensor_type: cartographer in your printer.cfg"
+    echo "  2. Check your printer.cfg (see $REPO_DIR/example-printer.cfg)"
+    echo "  3. Restart Klipper: sudo systemctl restart klipper"
+}
+
 install_other() {
     header "Installing eddy-ng for Eddy sensor (traditional)"
 
@@ -352,22 +373,27 @@ main() {
         echo -e "  ${BOLD}1)${NC} Eddy Duo (RP2040-based, USB or CAN bus)"
         echo "     Patchless install: pip package + pre-built firmware"
         echo ""
-        echo -e "  ${BOLD}2)${NC} Other (Eddy Coil, generic LDC1612, etc.)"
+        echo -e "  ${BOLD}2)${NC} Cartographer (RP2040-based, USB or CAN bus)"
+        echo "     Patchless install: pip package (no firmware flash needed)"
+        echo ""
+        echo -e "  ${BOLD}3)${NC} Other (Eddy Coil, generic LDC1612, etc.)"
         echo "     Traditional install: pip package + Klipper source patching"
         echo ""
-        read -p "Choose [1-2]: " choice
+        read -p "Choose [1-3]: " choice
 
         case "$choice" in
             1) SENSOR_TYPE="duo" ;;
-            2) SENSOR_TYPE="other" ;;
+            2) SENSOR_TYPE="cartographer" ;;
+            3) SENSOR_TYPE="other" ;;
             *) error "Invalid choice"; exit 1 ;;
         esac
     fi
 
     case "$SENSOR_TYPE" in
-        duo)   install_duo ;;
-        other) install_other ;;
-        *)     error "Invalid sensor type: $SENSOR_TYPE"; exit 1 ;;
+        duo)           install_duo ;;
+        cartographer)  install_cartographer ;;
+        other)         install_other ;;
+        *)             error "Invalid sensor type: $SENSOR_TYPE"; exit 1 ;;
     esac
 }
 

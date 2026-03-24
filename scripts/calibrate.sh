@@ -2,7 +2,7 @@
 #
 # eddy-ng fully automatic calibration script
 #
-# Runs all 4 calibration steps sequentially, handling Klipper restarts
+# Runs all 7 calibration steps sequentially, handling Klipper restarts
 # after each SAVE_CONFIG automatically. Only pauses for the manual Z
 # positioning in step 1.
 #
@@ -10,6 +10,17 @@
 #   On the printer:  ~/eddy-ng/scripts/calibrate.sh
 #   Via SSH:          ssh user@printer "~/eddy-ng/scripts/calibrate.sh"
 #   Remote:           ~/eddy-ng/scripts/calibrate.sh --url http://printer-ip
+#
+# Options:
+#   --url URL          Moonraker URL (default: http://localhost:7125)
+#   --full             Run all 7 steps including advanced (default: base only, steps 1-4)
+#   --bed-temp TEMP    Bed temperature for temp calibration (default: 90)
+#   --min-temp TEMP    Minimum sensor temp (default: 40)
+#   --max-temp TEMP    Maximum sensor temp (default: 60)
+#   --hotend-fan       Enable hotend fan cooling during temp calibration
+#   --twist-bed TEMP   Bed temperature for axis twist (default: 0 = cold)
+#   --twist-hotend TEMP  Hotend temp for axis twist (default: 0 = cold)
+#   --no-qgl           Skip QUAD_GANTRY_LEVEL (for printers without QGL)
 #
 set -e
 
@@ -34,20 +45,50 @@ MOONRAKER_URL="${MOONRAKER_URL:-http://localhost:7125}"
 RESTART_TIMEOUT=60
 COMMAND_POLL_INTERVAL=3
 COMMAND_TIMEOUT=600
+TEMP_CAL_TIMEOUT=3600  # 60 minutes for temp calibration
+
+FULL_CALIBRATION=0
+BED_TEMP=90
+MIN_TEMP=40
+MAX_TEMP=60
+HOTEND_FAN=0
+TWIST_BED_TEMP=0
+TWIST_HOTEND_TEMP=0
+USE_QGL=1
 
 # ─── Argument parsing ─────────────────────────────────────────────────────
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --url)       MOONRAKER_URL="$2"; shift 2 ;;
+        --url)           MOONRAKER_URL="$2"; shift 2 ;;
+        --full)          FULL_CALIBRATION=1; shift ;;
+        --bed-temp)      BED_TEMP="$2"; shift 2 ;;
+        --min-temp)      MIN_TEMP="$2"; shift 2 ;;
+        --max-temp)      MAX_TEMP="$2"; shift 2 ;;
+        --hotend-fan)    HOTEND_FAN=1; shift ;;
+        --twist-bed)     TWIST_BED_TEMP="$2"; shift 2 ;;
+        --twist-hotend)  TWIST_HOTEND_TEMP="$2"; shift 2 ;;
+        --no-qgl)        USE_QGL=0; shift ;;
         -h|--help)
-            echo "Usage: $0 [--url http://host:port]"
+            echo "Usage: $0 [OPTIONS]"
             echo ""
-            echo "Runs the full eddy-ng calibration (4 steps)."
-            echo "Only pauses for manual Z positioning in step 1."
+            echo "Runs the eddy-ng calibration workflow."
             echo ""
             echo "Options:"
-            echo "  --url URL    Moonraker URL (default: http://localhost:7125)"
+            echo "  --url URL            Moonraker URL (default: http://localhost:7125)"
+            echo "  --full               Run all 7 steps (default: base only, steps 1-4)"
+            echo "  --bed-temp TEMP      Bed temp for temp calibration (default: 90)"
+            echo "  --min-temp TEMP      Min sensor temp (default: 40)"
+            echo "  --max-temp TEMP      Max sensor temp (default: 60)"
+            echo "  --hotend-fan         Use hotend fan for faster cooling in temp cal"
+            echo "  --twist-bed TEMP     Bed temp for axis twist calibration (default: 0)"
+            echo "  --twist-hotend TEMP  Hotend temp for axis twist (default: 0)"
+            echo "  --no-qgl             Skip QUAD_GANTRY_LEVEL"
+            echo ""
+            echo "Examples:"
+            echo "  $0                                   # Base calibration (steps 1-4)"
+            echo "  $0 --full --bed-temp 110             # Full 7-step, bed at 110C"
+            echo "  $0 --full --bed-temp 110 --hotend-fan --twist-bed 60"
             exit 0
             ;;
         *)  error "Unknown option: $1"; exit 1 ;;
@@ -189,10 +230,24 @@ home_xy_and_wait() {
     success "XY homing complete"
 }
 
+qgl_and_wait() {
+    if [ "$USE_QGL" -eq 0 ]; then
+        info "Skipping QGL (--no-qgl)"
+        return 0
+    fi
+    info "Running QUAD_GANTRY_LEVEL..."
+    send_gcode_nowait "QUAD_GANTRY_LEVEL"
+    wait_for_command "Retries:" 120 || {
+        sleep 30
+        wait_for_ready 30
+    }
+    success "QGL complete"
+}
+
 # ─── Calibration steps ────────────────────────────────────────────────────
 
 step_1_setup() {
-    header "Step 1/4: Initial Sensor Setup"
+    header "Step 1/7: Initial Sensor Setup"
     echo ""
     echo -e "  This step requires ${BOLD}manual interaction${NC}."
     echo "  After homing, the nozzle moves to the bed center."
@@ -223,11 +278,11 @@ step_1_setup() {
     fi
 
     save_config_and_wait
-    success "Step 1/4 complete"
+    success "Step 1/7 complete"
 }
 
 step_2_optimize_dc() {
-    header "Step 2/4: Optimize Drive Current"
+    header "Step 2/7: Optimize Drive Current"
     info "This is fully automatic and takes ~2 minutes."
 
     home_and_wait
@@ -242,11 +297,11 @@ step_2_optimize_dc() {
     echo ""
 
     save_config_and_wait
-    success "Step 2/4 complete"
+    success "Step 2/7 complete"
 }
 
 step_3_threshold() {
-    header "Step 3/4: Calibrate Tap Threshold"
+    header "Step 3/7: Calibrate Tap Threshold"
     info "This is fully automatic and takes ~2 minutes."
 
     home_and_wait
@@ -261,11 +316,11 @@ step_3_threshold() {
     echo ""
 
     save_config_and_wait
-    success "Step 3/4 complete"
+    success "Step 3/7 complete"
 }
 
 step_4_verify() {
-    header "Step 4/4: Verification"
+    header "Step 4/7: Verification"
     info "Testing homing, tap, and probe accuracy."
 
     home_and_wait
@@ -285,13 +340,75 @@ step_4_verify() {
     done
     echo ""
 
-    success "Step 4/4 complete"
+    success "Step 4/7 complete — base calibration done"
+}
+
+step_5_temp_calibrate() {
+    header "Step 5/7: Temperature Compensation"
+    info "BED_TEMP=$BED_TEMP MIN_TEMP=$MIN_TEMP MAX_TEMP=$MAX_TEMP HOTEND_FAN=$HOTEND_FAN"
+    info "This takes 30-60 minutes. Do not touch the printer."
+
+    home_and_wait
+    qgl_and_wait
+
+    local cmd="PROBE_EDDY_NG_TEMPERATURE_CALIBRATE BED_TEMP=$BED_TEMP MIN_TEMP=$MIN_TEMP MAX_TEMP=$MAX_TEMP HOTEND_FAN=$HOTEND_FAN"
+    send_gcode_nowait "$cmd"
+    wait_for_command "SAVE_CONFIG to persist" "$TEMP_CAL_TIMEOUT"
+
+    save_config_and_wait
+    success "Step 5/7 complete"
+}
+
+step_6_axis_twist() {
+    header "Step 6/7: Axis Twist Compensation"
+    info "AXIS=BOTH BED_TEMP=$TWIST_BED_TEMP HOTEND_TEMP=$TWIST_HOTEND_TEMP"
+
+    home_and_wait
+    qgl_and_wait
+    # Re-home Z after QGL for accurate tap
+    send_gcode_nowait "G28 Z"
+    sleep 5
+
+    local cmd="PROBE_EDDY_NG_AXIS_TWIST_CALIBRATE AXIS=BOTH SAMPLE_COUNT=7 BED_TEMP=$TWIST_BED_TEMP HOTEND_TEMP=$TWIST_HOTEND_TEMP"
+    send_gcode_nowait "$cmd"
+    wait_for_command "SAVE_CONFIG to persist" "$COMMAND_TIMEOUT"
+
+    save_config_and_wait
+    success "Step 6/7 complete"
+}
+
+step_7_backlash() {
+    header "Step 7/7: Backlash Estimation"
+    info "This is fully automatic and takes ~2 minutes."
+
+    home_and_wait
+    qgl_and_wait
+    # Re-home Z after QGL
+    send_gcode_nowait "G28 Z"
+    sleep 5
+
+    send_gcode_nowait "PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1"
+    wait_for_command "SAVE_CONFIG to persist" "$COMMAND_TIMEOUT"
+
+    # Show results
+    echo ""
+    get_last_responses 10 | grep -iE "(backlash|measured|compensation)" | while read -r line; do
+        info "$line"
+    done
+    echo ""
+
+    save_config_and_wait
+    success "Step 7/7 complete"
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────
 
 main() {
-    header "eddy-ng Automatic Calibration"
+    if [ "$FULL_CALIBRATION" -eq 1 ]; then
+        header "eddy-ng Full Calibration (7 steps)"
+    else
+        header "eddy-ng Base Calibration (4 steps)"
+    fi
     info "Moonraker: $MOONRAKER_URL"
 
     # Check connection
@@ -305,24 +422,41 @@ main() {
     success "Printer is ready"
     echo ""
 
+    # Base calibration (steps 1-4)
     step_1_setup
     step_2_optimize_dc
     step_3_threshold
     step_4_verify
 
-    header "Calibration Complete!"
+    if [ "$FULL_CALIBRATION" -eq 1 ]; then
+        # Advanced calibration (steps 5-7)
+        step_5_temp_calibrate
+        step_6_axis_twist
+        step_7_backlash
+
+        header "Full Calibration Complete! (7/7)"
+    else
+        header "Base Calibration Complete! (4/7)"
+    fi
+
     echo ""
-    echo "Your eddy-ng probe is fully calibrated and ready to use."
+    echo "Your eddy-ng probe is calibrated and ready to use."
     echo ""
     echo "Next steps:"
     echo "  - G28               Home all axes"
     echo "  - PROBE_EDDY_NG_TAP Precise Z-offset before printing"
     echo "  - BED_MESH_CALIBRATE Scan the bed mesh"
     echo ""
-    echo "Optional advanced calibration:"
-    echo "  - PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1"
-    echo "  - PROBE_EDDY_NG_TEMPERATURE_CALIBRATE (requires scipy, ~30 min)"
-    echo ""
+
+    if [ "$FULL_CALIBRATION" -eq 0 ]; then
+        echo "Optional advanced calibration (steps 5-7):"
+        echo "  $0 --full --bed-temp 110"
+        echo "  Or run individual macros:"
+        echo "  - EDDY_NG_TEMP_CALIBRATE_5VON7 BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70"
+        echo "  - EDDY_NG_AXIS_TWIST_6VON7 BED_TEMP=60 HOTEND_TEMP=150"
+        echo "  - EDDY_NG_BACKLASH_7VON7"
+        echo ""
+    fi
 }
 
 main

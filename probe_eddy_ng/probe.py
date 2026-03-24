@@ -2583,6 +2583,7 @@ class ProbeEddy:
         min_temp = gcmd.get_float("MIN_TEMP", 40.0, minval=30.0, maxval=50.0)
         max_temp = gcmd.get_float("MAX_TEMP", 60.0, minval=50.0)
         bed_temp = gcmd.get_float("BED_TEMP", 90.0, minval=80.0)
+        use_hotend_fan = gcmd.get_int("HOTEND_FAN", 0) == 1
         heights = [1.0, 2.0, 3.0]
 
         if max_temp < min_temp + 15:
@@ -2615,6 +2616,8 @@ class ProbeEddy:
             f"Temperature calibration: {min_temp:.0f}-{max_temp:.0f}C "
             f"at bed {bed_temp:.0f}C across {len(heights)} heights"
         )
+        if use_hotend_fan:
+            self._log_msg("Hotend fan cooling enabled (M104 S80 during cooldown)")
         self._log_msg("This will take a while. Do not touch the printer.")
 
         for h_idx, height in enumerate(heights):
@@ -2625,7 +2628,9 @@ class ProbeEddy:
             cooldown_z = max(height, 15.0)
             self._log_msg(f"Cooling down (Z={cooldown_z:.0f}mm)...")
             gcode.run_script_from_command("M140 S0")     # bed off
-            gcode.run_script_from_command("M106 S255")   # fan on
+            gcode.run_script_from_command("M106 S255")   # part fan on
+            if use_hotend_fan:
+                gcode.run_script_from_command("M104 S80")  # trigger heater_fan
             toolhead.manual_move([None, None, cooldown_z], self.params.lift_speed)
             toolhead.wait_moves()
 
@@ -2635,7 +2640,9 @@ class ProbeEddy:
             # Heatup phase — lower to measurement height
             self._log_msg(f"Heating bed to {bed_temp:.0f}C...")
             gcode.run_script_from_command(f"M140 S{bed_temp:.0f}")
-            gcode.run_script_from_command("M106 S0")  # fan off
+            gcode.run_script_from_command("M106 S0")   # part fan off
+            if use_hotend_fan:
+                gcode.run_script_from_command("M104 S0")  # hotend off → heater_fan off
             toolhead.manual_move([None, None, height], self.params.lift_speed)
             toolhead.wait_moves()
 
@@ -2674,8 +2681,10 @@ class ProbeEddy:
                           f"height {height:.0f} mm")
             data_per_height[height] = samples
 
-        # Turn off bed
+        # Turn off heaters and fans
         gcode.run_script_from_command("M140 S0")
+        gcode.run_script_from_command("M104 S0")
+        gcode.run_script_from_command("M106 S0")
 
         # Fit model
         self._log_msg("Fitting temperature compensation model...")
@@ -2719,6 +2728,29 @@ class ProbeEddy:
             )
         sample_count = gcmd.get_int("SAMPLE_COUNT", 7, minval=3, maxval=20)
         samples_per_point = gcmd.get_int("SAMPLES", self.params.tap_samples, minval=1)
+        bed_temp = gcmd.get_float("BED_TEMP", 0.0, minval=0.0)
+        hotend_temp = gcmd.get_float("HOTEND_TEMP", 0.0, minval=0.0)
+
+        gcode = self._gcode
+
+        # Heat to print temperature if requested
+        if bed_temp > 0 or hotend_temp > 0:
+            self._log_msg("Heating to print temperature for axis twist calibration...")
+            if bed_temp > 0:
+                self._log_msg(f"  Bed: {bed_temp:.0f}C")
+                gcode.run_script_from_command(f"M190 S{bed_temp:.0f}")
+            if hotend_temp > 0:
+                if hotend_temp > 170:
+                    self._log_msg(
+                        f"  WARNING: Hotend {hotend_temp:.0f}C may cause ooze. "
+                        f"Consider using 150C max."
+                    )
+                self._log_msg(f"  Hotend: {hotend_temp:.0f}C")
+                gcode.run_script_from_command(f"M109 S{hotend_temp:.0f}")
+            # Thermal soak — let frame expand consistently
+            self._log_msg("Thermal soak (60s)...")
+            self._reactor.pause(self._reactor.monotonic() + 60.0)
+            self._log_msg("Thermal soak complete, starting calibration.")
 
         axes_to_run = ["X", "Y"] if axis == "BOTH" else [axis]
         all_results = {}
@@ -2754,6 +2786,12 @@ class ProbeEddy:
                            "calibrate_end_y", f"{r['end']:.1f}")
             configfile.set("axis_twist_compensation",
                            "calibrate_x", f"{r['fixed_pos']:.1f}")
+
+        # Turn off heaters if we heated
+        if bed_temp > 0 or hotend_temp > 0:
+            gcode.run_script_from_command("M140 S0")
+            gcode.run_script_from_command("M104 S0")
+            self._log_msg("Heaters turned off.")
 
         self._log_msg(
             "\nAxis twist compensation saved.\n"

@@ -848,28 +848,46 @@ cp ~/eddy-ng/calibrate_macros.cfg ~/printer_data/config/
 
 Then run each macro in order. After each `SAVE_CONFIG` restart, Klipper tells you which macro to run next:
 
+**Base calibration (required):**
+
 | Step | Macro | What it does | Time |
 |------|-------|-------------|------|
-| 1/4 | `EDDY_NG_CALIBRATE_1VON4` | Initial setup (manual Z positioning) | ~2 min |
-| 2/4 | `EDDY_NG_CALIBRATE_2VON4` | Optimize drive current | ~2 min |
-| 3/4 | `EDDY_NG_CALIBRATE_3VON4` | Calibrate tap threshold | ~2 min |
-| 4/4 | `EDDY_NG_CALIBRATE_4VON4` | Verify homing, tap, accuracy | ~1 min |
+| 1/7 | `EDDY_NG_SETUP_1VON7` | Initial setup (manual Z positioning) | ~2 min |
+| 2/7 | `EDDY_NG_OPTIMIZE_DC_2VON7` | Optimize drive current | ~2 min |
+| 3/7 | `EDDY_NG_CALIBRATE_THRESHOLD_3VON7` | Calibrate tap threshold | ~2 min |
+| 4/7 | `EDDY_NG_VERIFY_4VON7` | Verify homing, tap, accuracy | ~1 min |
 
-> **Note:** Step 1 requires manual interaction (lowering the nozzle with `TESTZ`). Steps 2-4 are fully automatic.
+**Advanced calibration (optional, for best accuracy):**
+
+| Step | Macro | What it does | Time |
+|------|-------|-------------|------|
+| 5/7 | `EDDY_NG_TEMP_CALIBRATE_5VON7` | Temperature compensation (requires scipy) | 30-60 min |
+| 6/7 | `EDDY_NG_AXIS_TWIST_6VON7` | Axis twist compensation via tap | ~6 min |
+| 7/7 | `EDDY_NG_BACKLASH_7VON7` | Z-axis backlash estimation | ~2 min |
+
+> **Note:** Step 1 requires manual interaction (lowering the nozzle with `TESTZ`). All other steps are fully automatic.
+>
+> Steps 5-7 accept parameters for your print conditions:
+> - **Step 5:** `BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70 HOTEND_FAN=1` — bed temp, sensor temp range, hotend fan for cooling
+> - **Step 6:** `BED_TEMP=60 HOTEND_TEMP=150` — calibrate twist at print temperature for best accuracy
+> - **Step 7:** No parameters needed
 
 #### Option B: Automatic Script (via SSH)
 
-Run the full calibration from the command line. The script handles all Klipper restarts automatically and only pauses for the manual Z positioning in step 1:
+Run the calibration from the command line. The script handles all Klipper restarts automatically and only pauses for the manual Z positioning in step 1:
 
 ```bash
+# Base calibration (steps 1-4):
 ~/eddy-ng/scripts/calibrate.sh
-```
 
-Or remotely:
+# Full calibration (all 7 steps):
+~/eddy-ng/scripts/calibrate.sh --full --bed-temp 110
 
-```bash
-ssh user@printer "~/eddy-ng/scripts/calibrate.sh"
-# Or specify a Moonraker URL:
+# Full calibration with all options:
+~/eddy-ng/scripts/calibrate.sh --full --bed-temp 110 --min-temp 40 --max-temp 70 \
+    --hotend-fan --twist-bed 60 --twist-hotend 150
+
+# Remote:
 ~/eddy-ng/scripts/calibrate.sh --url http://printer-ip:7125
 ```
 
@@ -886,11 +904,11 @@ ssh user@printer "~/eddy-ng/scripts/calibrate.sh"
 
 #### Optional Advanced Calibration
 
-After the basic setup:
+After the base setup (steps 1-4), continue with steps 5-7 for best accuracy. These can also be run individually:
 
-- **Axis twist compensation:** `EDDY_NG_AXIS_TWIST_CALIBRATE AXIS=BOTH` -- fully automatic tap-based twist calibration for X and Y axes (~6 min). Requires `[axis_twist_compensation]` section in printer.cfg. Saves and restarts automatically.
-- **Z backlash:** `PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1` -- measure and compensate Z backlash, then `SAVE_CONFIG`
-- **Temperature drift:** `PROBE_EDDY_NG_TEMPERATURE_CALIBRATE BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70` -- calibrate temperature drift compensation (requires scipy, takes 30-60 min), then `SAVE_CONFIG`
+- **Temperature compensation (step 5):** `EDDY_NG_TEMP_CALIBRATE_5VON7 BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70` -- calibrate temperature drift across 3 heights (requires scipy, 30-60 min). Add `HOTEND_FAN=1` to use the hotend fan for faster cooling between phases.
+- **Axis twist (step 6):** `EDDY_NG_AXIS_TWIST_6VON7 BED_TEMP=60 HOTEND_TEMP=150` -- fully automatic tap-based twist calibration for X and Y axes (~6 min). Best done at print temperature. Requires `[axis_twist_compensation]` in printer.cfg.
+- **Z backlash (step 7):** `EDDY_NG_BACKLASH_7VON7` -- measure and compensate Z backlash (~2 min)
 
 ### Before Every Print
 
@@ -1042,7 +1060,7 @@ eddy-ng/
 ├── src/eddy_ng/                 # pip package structure
 │   ├── __init__.py              #   Package skeleton
 │   └── scaffolding/             #   Import bridges for klippy/extras/
-├── calibrate_macros.cfg          # Calibration macro set (1VON4 through 4VON4)
+├── calibrate_macros.cfg          # Calibration macro set (7-step workflow)
 ├── scripts/
 │   ├── install.sh               #   Interactive installer
 │   ├── flash-duo.sh             #   Eddy Duo firmware flash utility

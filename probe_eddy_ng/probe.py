@@ -2590,6 +2590,32 @@ class ProbeEddy:
         reactor = self._reactor
         data_per_height: dict = {}
 
+        # Move probe to bed center before starting.
+        # Use bed_mesh zero_reference_position or mesh midpoint if available,
+        # otherwise fall back to kinematics range midpoint.
+        kin = toolhead.get_kinematics()
+        center_x = center_y = None
+        try:
+            bm = self._printer.lookup_object("bed_mesh")
+            bmc = bm.bmc
+            if hasattr(bmc, 'zero_reference_pos') and bmc.zero_reference_pos is not None:
+                center_x, center_y = bmc.zero_reference_pos
+            elif hasattr(bmc, 'mesh_min') and hasattr(bmc, 'mesh_max'):
+                center_x = (bmc.mesh_min[0] + bmc.mesh_max[0]) / 2.0
+                center_y = (bmc.mesh_min[1] + bmc.mesh_max[1]) / 2.0
+        except Exception:
+            pass
+        if center_x is None or center_y is None:
+            xrange = kin.rails[0].get_range()
+            yrange = kin.rails[1].get_range()
+            center_x = (xrange[0] + xrange[1]) / 2.0
+            center_y = (yrange[0] + yrange[1]) / 2.0
+        self._log_msg(
+            f"Moving probe to bed center ({center_x:.0f}, {center_y:.0f})"
+        )
+        toolhead.manual_move([center_x, center_y, None], self.params.move_speed)
+        toolhead.wait_moves()
+
         self._log_msg(
             f"Temperature calibration: {min_temp:.0f}-{max_temp:.0f}C "
             f"at bed {bed_temp:.0f}C across {len(heights)} heights"

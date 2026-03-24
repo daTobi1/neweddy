@@ -128,7 +128,7 @@ class ProbeEddySampler:
         """Get reference temperature from temp comp model."""
         if self._temp_comp is None:
             return 0.0
-        return self._temp_comp.coefficients.ref_temperature
+        return self._temp_comp.coeff.ref_temperature
 
     def __enter__(self):
         self.start()

@@ -109,7 +109,7 @@ The installer auto-detects your sensor type and chooses the right installation m
 
 ```bash
 cd ~
-git clone https://github.com/vvuk/eddy-ng.git
+git clone https://github.com/daTobi1/neweddy.git eddy-ng
 cd ~/eddy-ng
 ./install.sh
 ```

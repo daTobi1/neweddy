@@ -15,6 +15,7 @@ try:
     IS_KALICO = True
     HAS_PROBE_RESULT_TYPE = False
 except ImportError:
+    import os, sys
     import mcu  # type: ignore[no-redef]
     import pins  # type: ignore[no-redef]
     import chelper  # type: ignore[no-redef]
@@ -23,9 +24,13 @@ except ImportError:
     from configfile import error as configerror  # type: ignore[no-redef]
     from gcode import GCodeCommand  # type: ignore[no-redef]
     from toolhead import ToolHead  # type: ignore[no-redef]
-    # Import sibling Klipper extras modules. These are on sys.path because
-    # Klipper adds klippy/extras/ to sys.path at startup. Using bare imports
-    # works for both pip-installed (via scaffolding) and symlink-installed setups.
+    # Ensure klippy/extras/ is on sys.path so we can import sibling modules
+    # like probe, manual_probe, bed_mesh. The pip-installed package may load
+    # before Klipper adds extras/ to sys.path.
+    _klippy_dir = os.path.dirname(os.path.abspath(mcu.__file__))
+    _extras_dir = os.path.join(_klippy_dir, "extras")
+    if _extras_dir not in sys.path:
+        sys.path.insert(0, _extras_dir)
     import importlib
     probe = importlib.import_module("probe")
     manual_probe = importlib.import_module("manual_probe")

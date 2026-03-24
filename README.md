@@ -38,6 +38,9 @@ eddy-ng adds accurate Z-offset setting by physically making contact with the bui
   - [Command Details](#command-details)
 - [Typical Workflow](#typical-workflow)
   - [First-Time Setup](#first-time-setup)
+    - [Guided Macros](#option-a-guided-macros-recommended)
+    - [Automatic Script](#option-b-automatic-script-via-ssh)
+    - [Manual Commands](#option-c-manual-commands)
   - [Before Every Print](#before-every-print)
 - [Updating](#updating)
 - [Uninstallation](#uninstallation)
@@ -115,21 +118,13 @@ cd ~/eddy-ng
 ./install.sh
 ```
 
-The installer will ask:
-
-```
-Which Eddy sensor do you have?
-  1) Eddy Duo (RP2040-based, USB or CAN bus)
-     Patchless install: pip package + pre-built firmware
-
-  2) Cartographer (RP2040-based, USB or CAN bus)
-     Patchless install: pip package (no firmware flash needed)
-
-  3) Other (Eddy Coil, generic LDC1612, etc.)
-     Traditional install: pip package + Klipper source patching
-```
-
-Choose your sensor type and follow the prompts.
+The installer will:
+1. Ask which sensor you have (Eddy Duo, Cartographer, or other)
+2. Install Python dependencies and scaffolding files
+3. Copy `calibrate_macros.cfg` and `eddy-ng.cfg` to your Klipper config directory
+4. Tell you which `[include]` lines to add to `printer.cfg`
+5. For Eddy Duo: offer to flash firmware
+6. For other sensors: patch the Klipper Makefile for firmware rebuild
 
 If Klipper is in a non-standard location:
 
@@ -147,7 +142,8 @@ The Eddy Duo has its own RP2040 microcontroller. No Klipper source patching is n
 |---|---|
 | 1 | Installs Python dependencies (numpy) into Klipper's virtualenv |
 | 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges that load eddy-ng from the repo) |
-| 3 | Offers to flash firmware to the RP2040 (pre-built or build from source) |
+| 3 | Copies `calibrate_macros.cfg` and `eddy-ng.cfg` (example) to Klipper config directory |
+| 4 | Offers to flash firmware to the RP2040 (pre-built or build from source) |
 
 **Firmware flashing:**
 
@@ -205,6 +201,7 @@ The Cartographer probe has its own RP2040 MCU. No Klipper source patching or fir
 |---|---|
 | 1 | Installs Python dependencies (numpy) into Klipper's virtualenv |
 | 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges that load eddy-ng from the repo) |
+| 3 | Copies `calibrate_macros.cfg` and `eddy-ng.cfg` (example) to Klipper config directory |
 
 Set `sensor_type: cartographer` in your config. See [Configuration](#configuration).
 
@@ -218,6 +215,7 @@ Sensors without their own MCU (Eddy Coil, bare LDC1612, etc.) require the custom
 |---|---|
 | 1 | Installs Python dependencies (numpy) into Klipper's virtualenv |
 | 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges that load eddy-ng from the repo) |
+| 3 | Copies `calibrate_macros.cfg` and `eddy-ng.cfg` (example) to Klipper config directory |
 | 3 | Links the C firmware module into Klipper's `src/` directory |
 | 4 | Patches Klipper's `src/Makefile` to compile the sensor driver |
 
@@ -273,13 +271,14 @@ python3 install.py --uninstall    # Uninstall
 
 ### Standalone Config File
 
-You can keep all eddy-ng settings in a separate config file and include it in your `printer.cfg`:
+The installer automatically creates `eddy-ng.cfg` and `calibrate_macros.cfg` in your Klipper config directory. Add these includes to your `printer.cfg`:
 
 ```ini
 [include eddy-ng.cfg]
+[include calibrate_macros.cfg]
 ```
 
-Create `~/printer_data/config/eddy-ng.cfg` with your MCU, probe, temperature sensors, bed mesh, and macro settings. See the [example-printer.cfg](example-printer.cfg) for all available options.
+Edit `eddy-ng.cfg` with your MCU UUID, probe offsets, and other settings. See the [example-printer.cfg](example-printer.cfg) for all available options. The `calibrate_macros.cfg` can be removed after initial calibration is complete.
 
 ### Minimal Configuration
 
@@ -956,12 +955,15 @@ python3 install.py --uninstall
 |---|---|
 | Python package | pip uninstall from Klipper virtualenv (if previously installed) |
 | Scaffolding files | `klippy/extras/probe_eddy_ng.py`, `klippy/extras/ldc1612_ng.py` |
+| Calibration macros | `calibrate_macros.cfg` in Klipper config directory |
 | Plugin directory | `klippy/extras/probe_eddy_ng/` (or `klippy/plugins/` for Kalico) |
 | Sensor driver | `klippy/extras/ldc1612_ng.py` |
 | Firmware module | `src/sensor_ldc1612_ng.c` |
 | Makefile patch | Reverted in `src/Makefile` |
 | Legacy files | `probe_eddy_ng.py` (old single-file install) |
 | Legacy patches | `bed_mesh.py` patches from older versions |
+
+> **Note:** `eddy-ng.cfg` is **not** removed on uninstall since it contains user customizations. Delete it manually if desired.
 
 After uninstalling, remove the `[probe_eddy_ng ...]` section from your `printer.cfg` and restart Klipper.
 
@@ -996,9 +998,11 @@ eddy-ng/
 ├── src/eddy_ng/                 # pip package structure
 │   ├── __init__.py              #   Package skeleton
 │   └── scaffolding/             #   Import bridges for klippy/extras/
+├── calibrate_macros.cfg          # Calibration macro set (1VON4 through 4VON4)
 ├── scripts/
 │   ├── install.sh               #   Interactive installer
-│   └── flash-duo.sh             #   Eddy Duo firmware flash utility
+│   ├── flash-duo.sh             #   Eddy Duo firmware flash utility
+│   └── calibrate.sh             #   Automatic calibration via Moonraker API
 ├── firmware/                    # Pre-built firmware images
 │   └── README.md
 ├── tests/                       # Test suite

@@ -97,18 +97,93 @@ build_from_source() {
         sed -i 's,sensor_ldc1612.c$,sensor_ldc1612.c sensor_ldc1612_ng.c,' "$makefile"
     fi
 
-    # Select connection type
-    echo ""
-    echo -e "${BOLD}Select Eddy Duo connection type:${NC}"
-    echo ""
-    echo "  1) USB"
-    echo "  2) CAN bus (500 kbit/s)"
-    echo "  3) CAN bus (1 Mbit/s)"
-    echo ""
-    read -p "Choose [1-3]: " conn_choice
+    # Use preselected values from select_prebuilt if available, otherwise ask
+    local conn_choice="${PRESELECTED_CONN:-}"
+    local can_freq="${PRESELECTED_CAN_FREQ:-}"
+    local flash_offset="${PRESELECTED_FLASH_OFFSET:-0x10000100}"
 
-    local flash_offset="0x10000100"
-    local can_freq=""
+    if [ -z "$conn_choice" ]; then
+        # ── Step 1: Connection type ──
+        echo ""
+        echo -e "${BOLD}Connection type:${NC}"
+        echo ""
+        echo "  1) USB"
+        echo "  2) CAN bus"
+        echo ""
+        read -p "Choose [1-2]: " conn_choice
+
+        if [[ "$conn_choice" == "2" ]]; then
+            # ── Step 2: CAN baud rate ──
+            echo ""
+            echo -e "${BOLD}CAN bus baud rate:${NC}"
+            echo ""
+            echo "  1) 500 kbit/s"
+            echo "  2) 1 Mbit/s"
+            echo "  3) Custom"
+            echo ""
+            read -p "Choose [1-3]: " baud_choice
+
+            case "$baud_choice" in
+                1) can_freq="500000" ;;
+                2) can_freq="1000000" ;;
+                3)
+                    read -p "Enter baud rate in bit/s (e.g. 250000): " can_freq
+                    if ! [[ "$can_freq" =~ ^[0-9]+$ ]]; then
+                        error "Invalid baud rate: $can_freq"
+                        exit 1
+                    fi
+                    ;;
+                *) error "Invalid choice"; exit 1 ;;
+            esac
+
+            # ── Step 3: Bootloader offset ──
+            echo ""
+            echo -e "${BOLD}Bootloader offset:${NC}"
+            echo ""
+            echo "  1) No bootloader (0x10000100)"
+            echo "  2) Katapult (0x10004000)"
+            echo "  3) Custom"
+            echo ""
+            read -p "Choose [1-3]: " offset_choice
+
+            case "$offset_choice" in
+                1) flash_offset="0x10000100" ;;
+                2) flash_offset="0x10004000" ;;
+                3)
+                    read -p "Enter flash application address (hex, e.g. 0x10008000): " flash_offset
+                    if ! [[ "$flash_offset" =~ ^0x[0-9a-fA-F]+$ ]]; then
+                        error "Invalid hex address: $flash_offset"
+                        exit 1
+                    fi
+                    ;;
+                *) error "Invalid choice"; exit 1 ;;
+            esac
+        else
+            # USB: still ask for bootloader offset
+            echo ""
+            echo -e "${BOLD}Bootloader offset:${NC}"
+            echo ""
+            echo "  1) No bootloader (0x10000100)"
+            echo "  2) Katapult (0x10004000)"
+            echo "  3) Custom"
+            echo ""
+            read -p "Choose [1-3]: " offset_choice
+
+            case "$offset_choice" in
+                1) flash_offset="0x10000100" ;;
+                2) flash_offset="0x10004000" ;;
+                3)
+                    read -p "Enter flash application address (hex, e.g. 0x10008000): " flash_offset
+                    if ! [[ "$flash_offset" =~ ^0x[0-9a-fA-F]+$ ]]; then
+                        error "Invalid hex address: $flash_offset"
+                        exit 1
+                    fi
+                    ;;
+                *) error "Invalid choice"; exit 1 ;;
+            esac
+        fi
+    fi
+
     local config_file="$KLIPPER_DIR/.config"
 
     # Write base config for RP2040
@@ -132,21 +207,15 @@ EOF
         1)
             info "Configuring for USB..."
             cat >> "$config_file" << EOF
-CONFIG_FLASH_APPLICATION_ADDRESS=0x10000100
+CONFIG_FLASH_APPLICATION_ADDRESS=${flash_offset}
 CONFIG_USB=y
 CONFIG_USB_VENDOR_ID=0x1d50
 CONFIG_USB_DEVICE_ID=0x614e
 CONFIG_USB_SERIAL_NUMBER_CHIPID=y
 EOF
             ;;
-        2|3)
-            if [[ "$conn_choice" == "2" ]]; then
-                can_freq="500000"
-                info "Configuring for CAN bus 500k..."
-            else
-                can_freq="1000000"
-                info "Configuring for CAN bus 1M..."
-            fi
+        2)
+            info "Configuring for CAN bus (${can_freq} bit/s)..."
 
             # CAN GPIO pins
             echo ""
@@ -155,26 +224,6 @@ EOF
             read -p "CAN RX GPIO pin [${CAN_RX_GPIO}]: " user_rx
             CAN_TX_GPIO="${user_tx:-$CAN_TX_GPIO}"
             CAN_RX_GPIO="${user_rx:-$CAN_RX_GPIO}"
-
-            # Bootloader offset
-            echo ""
-            echo -e "${BOLD}Bootloader offset (CONFIG_FLASH_APPLICATION_ADDRESS):${NC}"
-            echo ""
-            echo "  If you use a bootloader (e.g. Katapult), the Klipper firmware must"
-            echo "  start after the bootloader in flash memory."
-            echo ""
-            echo "  Common values:"
-            echo "    0x10000100  -- No bootloader (RP2040 default)"
-            echo "    0x10004000  -- Katapult bootloader (16KB offset)"
-            echo ""
-            read -p "Flash application address [0x10000100]: " user_offset
-            flash_offset="${user_offset:-0x10000100}"
-
-            # Validate hex format
-            if ! [[ "$flash_offset" =~ ^0x[0-9a-fA-F]+$ ]]; then
-                error "Invalid hex address: $flash_offset"
-                exit 1
-            fi
 
             cat >> "$config_file" << EOF
 CONFIG_FLASH_APPLICATION_ADDRESS=${flash_offset}
@@ -197,15 +246,13 @@ EOF
     if [[ "$conn_choice" == "1" ]]; then
         echo -e "  Connection:    ${BOLD}USB${NC}"
     else
-        local freq_display="500k"
-        [[ "$conn_choice" == "3" ]] && freq_display="1M"
-        echo -e "  Connection:    ${BOLD}CAN bus ${freq_display}${NC}"
+        echo -e "  Connection:    ${BOLD}CAN bus (${can_freq} bit/s)${NC}"
         echo -e "  CAN TX pin:    ${BOLD}GPIO${CAN_TX_GPIO}${NC}"
         echo -e "  CAN RX pin:    ${BOLD}GPIO${CAN_RX_GPIO}${NC}"
     fi
     echo -e "  Flash offset:  ${BOLD}${flash_offset}${NC}"
     if [[ "$flash_offset" != "0x10000100" ]]; then
-        echo -e "  Bootloader:    ${BOLD}yes (custom offset)${NC}"
+        echo -e "  Bootloader:    ${BOLD}yes ($flash_offset)${NC}"
     else
         echo -e "  Bootloader:    ${BOLD}none${NC}"
     fi
@@ -251,97 +298,157 @@ EOF
 select_prebuilt() {
     header "Select Eddy Duo firmware"
 
-    echo "Select your Eddy Duo connection type:"
+    # ── Step 1: Connection type ──
+    echo -e "${BOLD}Connection type:${NC}"
     echo ""
     echo "  1) USB"
-    echo "  2) CAN bus (500 kbit/s)"
-    echo "  3) CAN bus (1 Mbit/s)"
+    echo "  2) CAN bus"
     echo ""
-    echo "  b) Build from source (custom CAN pins or bootloader offset)"
-    echo ""
-    read -p "Choose [1-3/b]: " fw_choice
+    read -p "Choose [1-2]: " conn_choice
 
+    local can_freq=""
+    local custom_baud=""
+
+    case "$conn_choice" in
+        1) ;;
+        2)
+            # ── Step 2: CAN baud rate ──
+            echo ""
+            echo -e "${BOLD}CAN bus baud rate:${NC}"
+            echo ""
+            echo "  1) 500 kbit/s"
+            echo "  2) 1 Mbit/s"
+            echo "  3) Custom"
+            echo ""
+            read -p "Choose [1-3]: " baud_choice
+
+            case "$baud_choice" in
+                1) can_freq="500000" ;;
+                2) can_freq="1000000" ;;
+                3)
+                    read -p "Enter baud rate in bit/s (e.g. 250000): " custom_baud
+                    can_freq="$custom_baud"
+                    if ! [[ "$can_freq" =~ ^[0-9]+$ ]]; then
+                        error "Invalid baud rate: $can_freq"
+                        exit 1
+                    fi
+                    ;;
+                *) error "Invalid choice"; exit 1 ;;
+            esac
+            ;;
+        *) error "Invalid choice"; exit 1 ;;
+    esac
+
+    # ── Step 3: Bootloader offset ──
+    echo ""
+    echo -e "${BOLD}Bootloader offset:${NC}"
+    echo ""
+    echo "  1) No bootloader (0x10000100)"
+    echo "  2) Katapult (0x10004000)"
+    echo "  3) Custom"
+    echo ""
+    read -p "Choose [1-3]: " offset_choice
+
+    local flash_offset="0x10000100"
     local use_katapult=0
 
-    case "$fw_choice" in
-        1)
-            FW_FILE="eddy-duo-usb.uf2"
+    case "$offset_choice" in
+        1) flash_offset="0x10000100" ;;
+        2) flash_offset="0x10004000"; use_katapult=1 ;;
+        3)
+            read -p "Enter flash application address (hex, e.g. 0x10008000): " flash_offset
+            if ! [[ "$flash_offset" =~ ^0x[0-9a-fA-F]+$ ]]; then
+                error "Invalid hex address: $flash_offset"
+                exit 1
+            fi
+            use_katapult=1
             ;;
-        2|3)
-            # Ask for bootloader offset
-            echo ""
-            echo -e "${BOLD}Bootloader offset:${NC}"
-            echo ""
-            echo "  Do you use a bootloader (e.g. Katapult) on the RP2040?"
-            echo "  If yes, the firmware needs a different flash offset."
-            echo ""
-            echo "  Common values:"
-            echo "    0x10000100  -- No bootloader (RP2040 default)"
-            echo "    0x10004000  -- Katapult bootloader (16KB offset)"
-            echo ""
-            read -p "Flash application address [0x10000100]: " user_offset
-            local flash_offset="${user_offset:-0x10000100}"
+        *) error "Invalid choice"; exit 1 ;;
+    esac
 
-            if [[ "$flash_offset" != "0x10000100" ]]; then
-                use_katapult=1
-            fi
+    # ── Determine if pre-built firmware is available ──
+    local needs_build=0
 
-            if [[ "$fw_choice" == "2" ]]; then
-                if [[ $use_katapult -eq 1 ]]; then
-                    FW_FILE="eddy-duo-katapult-canbus-500k.bin"
-                else
-                    FW_FILE="eddy-duo-canbus-500k.uf2"
-                fi
-            else
-                if [[ $use_katapult -eq 1 ]]; then
-                    FW_FILE="eddy-duo-katapult-canbus-1m.bin"
-                else
-                    FW_FILE="eddy-duo-canbus-1m.uf2"
-                fi
-            fi
+    # Custom baud rate → must build from source
+    if [[ -n "$custom_baud" ]]; then
+        info "Custom baud rate ${can_freq} -- building from source required."
+        needs_build=1
+    fi
 
-            # Show CAN pin info for pre-built firmware
-            echo ""
-            info "Pre-built CAN firmware uses:"
-            echo -e "  CAN TX: ${BOLD}GPIO1${NC}"
-            echo -e "  CAN RX: ${BOLD}GPIO0${NC}"
-            echo ""
-            echo "If your Eddy Duo uses different CAN pins, choose 'Build from source'."
-            read -p "Continue with pre-built firmware? [Y/n]: " confirm
-            if [[ "$confirm" =~ ^[nN] ]]; then
-                build_from_source
-                return
-            fi
+    # Custom bootloader offset (not 0x10000100 and not 0x10004000) → must build
+    if [[ "$flash_offset" != "0x10000100" && "$flash_offset" != "0x10004000" ]]; then
+        info "Custom bootloader offset ${flash_offset} -- building from source required."
+        needs_build=1
+    fi
 
+    # USB + Katapult → no pre-built available
+    if [[ "$conn_choice" == "1" && $use_katapult -eq 1 ]]; then
+        info "USB with bootloader offset -- building from source required."
+        needs_build=1
+    fi
+
+    if [[ $needs_build -eq 1 ]]; then
+        # Pass collected settings to build_from_source
+        PRESELECTED_CONN="$conn_choice"
+        PRESELECTED_CAN_FREQ="$can_freq"
+        PRESELECTED_FLASH_OFFSET="$flash_offset"
+        build_from_source
+        return
+    fi
+
+    # ── Select pre-built firmware file ──
+    if [[ "$conn_choice" == "1" ]]; then
+        FW_FILE="eddy-duo-usb.uf2"
+    else
+        if [[ "$can_freq" == "500000" ]]; then
             if [[ $use_katapult -eq 1 ]]; then
-                warn "Using bootloader offset: $flash_offset"
-                warn "Make sure your bootloader is already flashed on the RP2040."
-
-                # If user entered a non-standard offset, we can't use pre-built
-                if [[ "$flash_offset" != "0x10004000" ]]; then
-                    warn "Custom offset $flash_offset -- pre-built firmware uses 0x10004000."
-                    echo ""
-                    echo "Options:"
-                    echo "  1) Use pre-built with 0x10004000 anyway"
-                    echo "  2) Build from source with your custom offset"
-                    echo ""
-                    read -p "Choose [1-2]: " offset_choice
-                    if [[ "$offset_choice" == "2" ]]; then
-                        build_from_source
-                        return
-                    fi
-                fi
+                FW_FILE="eddy-duo-katapult-canbus-500k.bin"
+            else
+                FW_FILE="eddy-duo-canbus-500k.uf2"
             fi
-            ;;
-        b|B)
+        else
+            if [[ $use_katapult -eq 1 ]]; then
+                FW_FILE="eddy-duo-katapult-canbus-1m.bin"
+            else
+                FW_FILE="eddy-duo-canbus-1m.uf2"
+            fi
+        fi
+
+        # Show CAN pin info for pre-built firmware
+        echo ""
+        info "Pre-built CAN firmware uses BTT Eddy Duo default pins:"
+        echo -e "  CAN TX: ${BOLD}GPIO1${NC}"
+        echo -e "  CAN RX: ${BOLD}GPIO0${NC}"
+        echo ""
+        echo "If your Eddy Duo uses different CAN pins, choose 'Build from source'."
+        read -p "Continue with pre-built firmware? [Y/n]: " confirm
+        if [[ "$confirm" =~ ^[nN] ]]; then
+            PRESELECTED_CONN="$conn_choice"
+            PRESELECTED_CAN_FREQ="$can_freq"
+            PRESELECTED_FLASH_OFFSET="$flash_offset"
             build_from_source
             return
-            ;;
-        *)
-            error "Invalid choice"
-            exit 1
-            ;;
-    esac
+        fi
+
+        if [[ $use_katapult -eq 1 ]]; then
+            warn "Using Katapult bootloader offset: $flash_offset"
+            warn "Make sure Katapult is already flashed on the RP2040."
+        fi
+    fi
+
+    # ── Show summary ──
+    echo ""
+    info "Firmware configuration:"
+    if [[ "$conn_choice" == "1" ]]; then
+        echo -e "  Connection:    ${BOLD}USB${NC}"
+    else
+        local freq_display="500k"
+        [[ "$can_freq" == "1000000" ]] && freq_display="1M"
+        echo -e "  Connection:    ${BOLD}CAN bus ${freq_display}${NC}"
+    fi
+    echo -e "  Bootloader:    ${BOLD}$([ $use_katapult -eq 1 ] && echo "Katapult ($flash_offset)" || echo "none")${NC}"
+    echo -e "  Firmware:      ${BOLD}${FW_FILE}${NC}"
+    echo ""
 
     FW_PATH="$FIRMWARE_DIR/$FW_FILE"
 
@@ -686,6 +793,9 @@ FW_PATH=""
 FW_FILE=""
 CAN_UUID=""
 CAN_IFACE=""
+PRESELECTED_CONN=""
+PRESELECTED_CAN_FREQ=""
+PRESELECTED_FLASH_OFFSET=""
 
 if [ $BUILD_MODE -eq 1 ]; then
     build_from_source

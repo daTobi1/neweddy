@@ -2621,17 +2621,18 @@ class ProbeEddy:
             self._log_msg(f"\n--- Phase {h_idx + 1}/{len(heights)}: "
                           f"height {height:.0f} mm ---")
 
-            # Cooldown phase
-            self._log_msg("Cooling down...")
+            # Cooldown phase — raise probe high for faster cooling
+            cooldown_z = max(height, 15.0)
+            self._log_msg(f"Cooling down (Z={cooldown_z:.0f}mm)...")
             gcode.run_script_from_command("M140 S0")     # bed off
             gcode.run_script_from_command("M106 S255")   # fan on
-            toolhead.manual_move([None, None, height], self.params.lift_speed)
+            toolhead.manual_move([None, None, cooldown_z], self.params.lift_speed)
             toolhead.wait_moves()
 
-            # Wait for cooldown
-            self._wait_for_temperature(min_temp, direction="cool")
+            # Wait for cooldown (tolerance +2C, longer timeout for large beds)
+            self._wait_for_temperature(min_temp + 2, direction="cool", timeout=1200.0)
 
-            # Heatup phase
+            # Heatup phase — lower to measurement height
             self._log_msg(f"Heating bed to {bed_temp:.0f}C...")
             gcode.run_script_from_command(f"M140 S{bed_temp:.0f}")
             gcode.run_script_from_command("M106 S0")  # fan off

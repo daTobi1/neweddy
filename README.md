@@ -909,6 +909,26 @@ Run the calibration from the command line. The script handles all Klipper restar
 ~/eddy-ng/scripts/calibrate.sh --url http://printer-ip:7125
 ```
 
+#### Cartographer (native firmware)
+
+If using a Cartographer probe with its native firmware (not eddy-ng firmware), use the Cartographer-specific macros instead:
+
+```ini
+[include calibrate_macros_cartographer.cfg]
+```
+
+| Step | Macro | What it does | Time |
+|------|-------|-------------|------|
+| 1/7 | `CARTO_SCAN_CALIBRATE_1VON7` | Scan calibration | ~2 min |
+| 2/7 | `CARTO_TOUCH_CALIBRATE_2VON7` | Touch calibration | ~2 min |
+| 3/7 | `CARTO_VERIFY_3VON7` | Verify touch + scan | ~1 min |
+| 4/7 | `CARTO_TEMP_CALIBRATE_4VON7` | Temperature compensation | 30-60 min |
+| 5/7 | `CARTO_AXIS_TWIST_5VON7` | Axis twist via touch | ~6 min |
+| 6/7 | `CARTO_BACKLASH_6VON7` | Backlash estimation | ~2 min |
+| 7/7 | `CARTO_FULL_VERIFY_7VON7` | Final verification | ~3 min |
+
+Configure defaults in `_CARTO_SETTINGS` (same concept as `_EDDY_NG_SETTINGS`).
+
 #### Option C: Manual Commands
 
 1. Install eddy-ng and configure `printer.cfg`
@@ -1078,7 +1098,8 @@ eddy-ng/
 ├── src/eddy_ng/                 # pip package structure
 │   ├── __init__.py              #   Package skeleton
 │   └── scaffolding/             #   Import bridges for klippy/extras/
-├── calibrate_macros.cfg          # Calibration macro set (7-step workflow)
+├── calibrate_macros.cfg          # Calibration macro set (7-step workflow, eddy-ng)
+├── calibrate_macros_cartographer.cfg # Calibration macros for native Cartographer firmware
 ├── scripts/
 │   ├── install.sh               #   Interactive installer
 │   ├── flash-duo.sh             #   Eddy Duo firmware flash utility

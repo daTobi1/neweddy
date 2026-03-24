@@ -272,19 +272,13 @@ python3 install.py --uninstall    # Uninstall
 
 ### Standalone Config File
 
-A ready-to-use config file is included in the repo. Copy it to your printer config directory and include it:
-
-```bash
-cp ~/eddy-ng/eddy-ng.cfg ~/printer_data/config/eddy-ng.cfg
-```
-
-In your `printer.cfg`:
+You can keep all eddy-ng settings in a separate config file and include it in your `printer.cfg`:
 
 ```ini
 [include eddy-ng.cfg]
 ```
 
-Edit `eddy-ng.cfg` to match your hardware (CAN UUID, probe offsets, sensor type, bed size). The file includes MCU, probe, temperature sensors, bed mesh, QGL, and macros.
+Create `~/printer_data/config/eddy-ng.cfg` with your MCU, probe, temperature sensors, bed mesh, and macro settings. See the [example-printer.cfg](example-printer.cfg) for all available options.
 
 ### Minimal Configuration
 
@@ -944,7 +938,6 @@ eddy-ng/
 ├── firmware/                    # Pre-built firmware images
 │   └── README.md
 ├── tests/                       # Test suite
-├── eddy-ng.cfg                  # Standalone config (copy to printer_data/config/)
 ├── install.py                   # Legacy installer
 ├── install.sh                   # Install wrapper
 ├── uninstall.sh                 # Uninstall wrapper

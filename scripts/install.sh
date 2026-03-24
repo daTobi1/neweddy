@@ -39,7 +39,8 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --duo              Select Eddy Duo sensor (patchless install)"
-    echo "  --cartographer     Select Cartographer sensor (patchless install)"
+    echo "  --cartographer     Select Cartographer (native firmware, macros only)"
+    echo "  --cartographer-eddy Select Cartographer (eddy-ng firmware, full install)"
     echo "  --other            Select other Eddy sensor (traditional install)"
     echo "  -e, --klippy-env   Klippy virtualenv directory"
     echo "  -u, --uninstall    Uninstall eddy-ng"
@@ -49,9 +50,10 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --duo)         SENSOR_TYPE="duo"; shift ;;
-        --cartographer) SENSOR_TYPE="cartographer"; shift ;;
-        --other)       SENSOR_TYPE="other"; shift ;;
+        --duo)              SENSOR_TYPE="duo"; shift ;;
+        --cartographer)     SENSOR_TYPE="cartographer"; shift ;;
+        --cartographer-eddy) SENSOR_TYPE="cartographer_eddy"; shift ;;
+        --other)            SENSOR_TYPE="other"; shift ;;
         -e|--klippy-env) KLIPPY_ENV="$2"; shift 2 ;;
         -u|--uninstall)  UNINSTALL=1; shift ;;
         -h|--help)     usage ;;
@@ -240,7 +242,7 @@ get_config_dir() {
     fi
 }
 
-install_config_files() {
+install_config_files_eddy() {
     local config_dir
     config_dir=$(get_config_dir)
 
@@ -250,7 +252,7 @@ install_config_files() {
         return
     fi
 
-    header "Installing config files"
+    header "Installing config files (eddy-ng)"
 
     # Copy calibration macros
     cp "$REPO_DIR/calibrate_macros.cfg" "$config_dir/calibrate_macros.cfg"
@@ -288,6 +290,44 @@ install_config_files() {
     fi
 }
 
+install_config_files_cartographer() {
+    local config_dir
+    config_dir=$(get_config_dir)
+
+    if [ -z "$config_dir" ]; then
+        warn "Could not detect Klipper config directory."
+        warn "Manually copy calibrate_macros_cartographer.cfg to your config directory."
+        return
+    fi
+
+    header "Installing config files (Cartographer)"
+
+    # Copy Cartographer calibration macros
+    cp "$REPO_DIR/calibrate_macros_cartographer.cfg" "$config_dir/calibrate_macros_cartographer.cfg"
+    success "Copied calibrate_macros_cartographer.cfg to $config_dir/"
+
+    # Check if includes are in printer.cfg
+    local printer_cfg="$config_dir/printer.cfg"
+    if [ -f "$printer_cfg" ]; then
+        if ! grep -qF "[include calibrate_macros_cartographer.cfg]" "$printer_cfg"; then
+            echo ""
+            warn "Add this line to your printer.cfg:"
+            echo ""
+            echo "  [include calibrate_macros_cartographer.cfg]"
+            echo ""
+        fi
+
+        # Check for axis_twist_compensation
+        if ! grep -qE "^\[axis_twist_compensation\]" "$printer_cfg"; then
+            echo ""
+            warn "For axis twist calibration (step 5), add to your printer.cfg:"
+            echo ""
+            echo "  [axis_twist_compensation]"
+            echo ""
+        fi
+    fi
+}
+
 remove_config_files() {
     local config_dir
     config_dir=$(get_config_dir)
@@ -296,6 +336,10 @@ remove_config_files() {
         if [ -f "$config_dir/calibrate_macros.cfg" ]; then
             rm -f "$config_dir/calibrate_macros.cfg"
             info "Removed $config_dir/calibrate_macros.cfg"
+        fi
+        if [ -f "$config_dir/calibrate_macros_cartographer.cfg" ]; then
+            rm -f "$config_dir/calibrate_macros_cartographer.cfg"
+            info "Removed $config_dir/calibrate_macros_cartographer.cfg"
         fi
         # Don't remove eddy-ng.cfg on uninstall -- it has user customizations
     fi
@@ -388,7 +432,7 @@ install_duo() {
     remove_legacy
     install_pip_package
     create_scaffolding
-    install_config_files
+    install_config_files_eddy
 
     success "Python plugin installed (no Klipper source patching needed)"
     offer_duo_flash
@@ -400,17 +444,47 @@ install_duo() {
     echo "  1. Make sure your Eddy Duo firmware is flashed"
     echo "  2. Edit eddy-ng.cfg with your sensor settings (MCU UUID, offsets, etc.)"
     echo "  3. Restart Klipper: sudo systemctl restart klipper"
-    echo "  4. Run calibration: EDDY_NG_CALIBRATE_1VON4"
+    echo "  4. Run calibration: EDDY_NG_SETUP_1VON7"
     echo "     Or automatic:    $REPO_DIR/scripts/calibrate.sh"
 }
 
-install_cartographer() {
-    header "Installing eddy-ng for Cartographer (patchless)"
+install_cartographer_native() {
+    header "Installing calibration macros for Cartographer (native firmware)"
+
+    install_config_files_cartographer
+
+    header "Done"
+    echo -e "${GREEN}Cartographer calibration macros installed!${NC}"
+    echo ""
+    echo "This installs only the calibration macro workflow."
+    echo "Your Cartographer probe continues to use its native firmware."
+    echo ""
+    echo "Next steps:"
+    echo "  1. Add [include calibrate_macros_cartographer.cfg] to printer.cfg"
+    echo "  2. Add [axis_twist_compensation] to printer.cfg (for axis twist)"
+    echo "  3. Edit _CARTO_SETTINGS in calibrate_macros_cartographer.cfg"
+    echo "  4. Restart Klipper: sudo systemctl restart klipper"
+    echo "  5. Run calibration: CARTO_SCAN_CALIBRATE_1VON7"
+}
+
+install_cartographer_eddy() {
+    header "Installing eddy-ng for Cartographer (replaces native firmware)"
+
+    echo ""
+    warn "This replaces the Cartographer's native firmware with Klipper firmware."
+    warn "The Cartographer v3 (STM32F042) has only 32KB flash and may not"
+    warn "have enough space for eddy-ng. The Cartographer v4 (STM32G431) works."
+    echo ""
+    read -p "Continue? [y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[yYjJ]$ ]]; then
+        info "Aborted."
+        return
+    fi
 
     remove_legacy
     install_pip_package
     create_scaffolding
-    install_config_files
+    install_config_files_eddy
 
     success "Python plugin installed (no Klipper source patching needed)"
 
@@ -418,10 +492,10 @@ install_cartographer() {
     echo -e "${GREEN}eddy-ng installed for Cartographer!${NC}"
     echo ""
     echo "Next steps:"
-    echo "  1. Edit eddy-ng.cfg: set sensor_type: cartographer, MCU UUID, offsets"
-    echo "  2. Restart Klipper: sudo systemctl restart klipper"
-    echo "  3. Run calibration: EDDY_NG_CALIBRATE_1VON4"
-    echo "     Or automatic:    $REPO_DIR/scripts/calibrate.sh"
+    echo "  1. Flash Cartographer with Klipper firmware (requires custom build)"
+    echo "  2. Edit eddy-ng.cfg: set sensor_type: cartographer, MCU UUID, offsets"
+    echo "  3. Restart Klipper: sudo systemctl restart klipper"
+    echo "  4. Run calibration: EDDY_NG_SETUP_1VON7"
 }
 
 install_other() {
@@ -430,7 +504,7 @@ install_other() {
     remove_legacy
     install_pip_package
     create_scaffolding
-    install_config_files
+    install_config_files_eddy
     install_firmware_patch
 
     header "Done"
@@ -440,7 +514,7 @@ install_other() {
     echo "  1. Rebuild and flash your MCU firmware: $REPO_DIR/flash.sh"
     echo "  2. Edit eddy-ng.cfg with your sensor settings (offsets, etc.)"
     echo "  3. Restart Klipper: sudo systemctl restart klipper"
-    echo "  4. Run calibration: EDDY_NG_CALIBRATE_1VON4"
+    echo "  4. Run calibration: EDDY_NG_SETUP_1VON7"
     echo "     Or automatic:    $REPO_DIR/scripts/calibrate.sh"
 }
 
@@ -466,32 +540,37 @@ main() {
     # Sensor selection (interactive or via flag)
     if [ -z "$SENSOR_TYPE" ]; then
         header "eddy-ng Installer"
-        echo "Which Eddy sensor do you have?"
+        echo "Which probe do you have?"
         echo ""
-        echo -e "  ${BOLD}1)${NC} Eddy Duo (RP2040-based, USB or CAN bus)"
+        echo -e "  ${BOLD}1)${NC} BTT Eddy Duo (RP2040-based, USB or CAN bus)"
         echo "     Patchless install: pip package + pre-built firmware"
         echo ""
-        echo -e "  ${BOLD}2)${NC} Cartographer (RP2040-based, USB or CAN bus)"
-        echo "     Patchless install: pip package (no firmware flash needed)"
+        echo -e "  ${BOLD}2)${NC} Cartographer — keep native firmware (recommended)"
+        echo "     Installs calibration macros only (no firmware change)"
         echo ""
-        echo -e "  ${BOLD}3)${NC} Other (Eddy Coil, generic LDC1612, etc.)"
+        echo -e "  ${BOLD}3)${NC} Cartographer — replace with eddy-ng firmware"
+        echo "     Full eddy-ng install (requires firmware flash, v4+ recommended)"
+        echo ""
+        echo -e "  ${BOLD}4)${NC} Other (Eddy Coil, generic LDC1612, Mellow Fly, etc.)"
         echo "     Traditional install: pip package + Klipper source patching"
         echo ""
-        read -p "Choose [1-3]: " choice
+        read -p "Choose [1-4]: " choice
 
         case "$choice" in
             1) SENSOR_TYPE="duo" ;;
             2) SENSOR_TYPE="cartographer" ;;
-            3) SENSOR_TYPE="other" ;;
+            3) SENSOR_TYPE="cartographer_eddy" ;;
+            4) SENSOR_TYPE="other" ;;
             *) error "Invalid choice"; exit 1 ;;
         esac
     fi
 
     case "$SENSOR_TYPE" in
-        duo)           install_duo ;;
-        cartographer)  install_cartographer ;;
-        other)         install_other ;;
-        *)             error "Invalid sensor type: $SENSOR_TYPE"; exit 1 ;;
+        duo)                  install_duo ;;
+        cartographer)         install_cartographer_native ;;
+        cartographer_eddy)    install_cartographer_eddy ;;
+        other)                install_other ;;
+        *)                    error "Invalid sensor type: $SENSOR_TYPE"; exit 1 ;;
     esac
 }
 

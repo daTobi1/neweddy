@@ -756,13 +756,27 @@ class ProbeEddy:
             # at the right place
             self._z_hop()
 
-        # Move nozzle to bed center before starting manual probe
+        # Move nozzle to bed center before starting manual probe.
+        # Use bed_mesh zero_reference_position or mesh midpoint if available,
+        # otherwise fall back to kinematics range midpoint.
         th = self._printer.lookup_object("toolhead")
         kin = th.get_kinematics()
-        xrange = kin.rails[0].get_range()
-        yrange = kin.rails[1].get_range()
-        center_x = (xrange[0] + xrange[1]) / 2.0
-        center_y = (yrange[0] + yrange[1]) / 2.0
+        center_x = center_y = None
+        try:
+            bm = self._printer.lookup_object("bed_mesh")
+            bmc = bm.bmc
+            if hasattr(bmc, 'zero_reference_pos') and bmc.zero_reference_pos is not None:
+                center_x, center_y = bmc.zero_reference_pos
+            elif hasattr(bmc, 'mesh_min') and hasattr(bmc, 'mesh_max'):
+                center_x = (bmc.mesh_min[0] + bmc.mesh_max[0]) / 2.0
+                center_y = (bmc.mesh_min[1] + bmc.mesh_max[1]) / 2.0
+        except Exception:
+            pass
+        if center_x is None or center_y is None:
+            xrange = kin.rails[0].get_range()
+            yrange = kin.rails[1].get_range()
+            center_x = (xrange[0] + xrange[1]) / 2.0
+            center_y = (yrange[0] + yrange[1]) / 2.0
         self._log_msg(f"setup: moving nozzle to bed center ({center_x:.0f}, {center_y:.0f})")
         th.manual_move([center_x, center_y, None], self.params.move_speed)
         th.wait_moves()

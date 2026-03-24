@@ -227,6 +227,80 @@ remove_scaffolding() {
     done
 }
 
+# ─── Config files ────────────────────────────────────────────────────────────
+
+get_config_dir() {
+    # Detect the Klipper config directory (printer_data/config or similar)
+    if [ -d "$HOME/printer_data/config" ]; then
+        echo "$HOME/printer_data/config"
+    elif [ -d "$HOME/klipper_config" ]; then
+        echo "$HOME/klipper_config"
+    else
+        echo ""
+    fi
+}
+
+install_config_files() {
+    local config_dir
+    config_dir=$(get_config_dir)
+
+    if [ -z "$config_dir" ]; then
+        warn "Could not detect Klipper config directory."
+        warn "Manually copy calibrate_macros.cfg to your config directory."
+        return
+    fi
+
+    header "Installing config files"
+
+    # Copy calibration macros
+    cp "$REPO_DIR/calibrate_macros.cfg" "$config_dir/calibrate_macros.cfg"
+    success "Copied calibrate_macros.cfg to $config_dir/"
+
+    # Copy example config if no eddy-ng config exists yet
+    if [ ! -f "$config_dir/eddy-ng.cfg" ]; then
+        cp "$REPO_DIR/example-printer.cfg" "$config_dir/eddy-ng.cfg"
+        success "Copied example config to $config_dir/eddy-ng.cfg"
+        warn "Edit eddy-ng.cfg with your sensor settings (MCU, offsets, etc.)"
+    else
+        info "eddy-ng.cfg already exists, skipping"
+    fi
+
+    # Check if includes are in printer.cfg
+    local printer_cfg="$config_dir/printer.cfg"
+    if [ -f "$printer_cfg" ]; then
+        local needs_include=0
+        if ! grep -qF "[include eddy-ng.cfg]" "$printer_cfg" && \
+           ! grep -qF "include.*eddy" "$printer_cfg" 2>/dev/null; then
+            needs_include=1
+        fi
+        if ! grep -qF "[include calibrate_macros.cfg]" "$printer_cfg"; then
+            needs_include=1
+        fi
+
+        if [ $needs_include -eq 1 ]; then
+            echo ""
+            warn "Add these lines to your printer.cfg if not already present:"
+            echo ""
+            echo "  [include eddy-ng.cfg]"
+            echo "  [include calibrate_macros.cfg]"
+            echo ""
+        fi
+    fi
+}
+
+remove_config_files() {
+    local config_dir
+    config_dir=$(get_config_dir)
+
+    if [ -n "$config_dir" ]; then
+        if [ -f "$config_dir/calibrate_macros.cfg" ]; then
+            rm -f "$config_dir/calibrate_macros.cfg"
+            info "Removed $config_dir/calibrate_macros.cfg"
+        fi
+        # Don't remove eddy-ng.cfg on uninstall -- it has user customizations
+    fi
+}
+
 # ─── Firmware: Makefile patching (for non-Duo sensors) ───────────────────────
 
 install_firmware_patch() {
@@ -300,6 +374,7 @@ do_uninstall() {
     header "Uninstalling eddy-ng"
     remove_legacy
     remove_scaffolding
+    remove_config_files
     remove_firmware_patch
     uninstall_pip_package
     success "eddy-ng uninstalled"
@@ -313,6 +388,7 @@ install_duo() {
     remove_legacy
     install_pip_package
     create_scaffolding
+    install_config_files
 
     success "Python plugin installed (no Klipper source patching needed)"
     offer_duo_flash
@@ -322,8 +398,10 @@ install_duo() {
     echo ""
     echo "Next steps:"
     echo "  1. Make sure your Eddy Duo firmware is flashed"
-    echo "  2. Check your printer.cfg (see $REPO_DIR/example-printer.cfg)"
+    echo "  2. Edit eddy-ng.cfg with your sensor settings (MCU UUID, offsets, etc.)"
     echo "  3. Restart Klipper: sudo systemctl restart klipper"
+    echo "  4. Run calibration: EDDY_NG_CALIBRATE_1VON4"
+    echo "     Or automatic:    $REPO_DIR/scripts/calibrate.sh"
 }
 
 install_cartographer() {
@@ -332,6 +410,7 @@ install_cartographer() {
     remove_legacy
     install_pip_package
     create_scaffolding
+    install_config_files
 
     success "Python plugin installed (no Klipper source patching needed)"
 
@@ -339,9 +418,10 @@ install_cartographer() {
     echo -e "${GREEN}eddy-ng installed for Cartographer!${NC}"
     echo ""
     echo "Next steps:"
-    echo "  1. Set sensor_type: cartographer in your printer.cfg"
-    echo "  2. Check your printer.cfg (see $REPO_DIR/example-printer.cfg)"
-    echo "  3. Restart Klipper: sudo systemctl restart klipper"
+    echo "  1. Edit eddy-ng.cfg: set sensor_type: cartographer, MCU UUID, offsets"
+    echo "  2. Restart Klipper: sudo systemctl restart klipper"
+    echo "  3. Run calibration: EDDY_NG_CALIBRATE_1VON4"
+    echo "     Or automatic:    $REPO_DIR/scripts/calibrate.sh"
 }
 
 install_other() {
@@ -350,6 +430,7 @@ install_other() {
     remove_legacy
     install_pip_package
     create_scaffolding
+    install_config_files
     install_firmware_patch
 
     header "Done"
@@ -357,8 +438,10 @@ install_other() {
     echo ""
     echo "Next steps:"
     echo "  1. Rebuild and flash your MCU firmware: $REPO_DIR/flash.sh"
-    echo "  2. Check your printer.cfg (see $REPO_DIR/example-printer.cfg)"
+    echo "  2. Edit eddy-ng.cfg with your sensor settings (offsets, etc.)"
     echo "  3. Restart Klipper: sudo systemctl restart klipper"
+    echo "  4. Run calibration: EDDY_NG_CALIBRATE_1VON4"
+    echo "     Or automatic:    $REPO_DIR/scripts/calibrate.sh"
 }
 
 # ─── Main ────────────────────────────────────────────────────────────────────

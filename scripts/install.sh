@@ -159,7 +159,7 @@ except ImportError:
     }
 
     info "Installing eddy-ng into $KLIPPY_ENV..."
-    "$KLIPPY_ENV/bin/pip" install -e "$REPO_DIR"
+    "$KLIPPY_ENV/bin/pip" install "$REPO_DIR"
     success "Python package installed"
 }
 

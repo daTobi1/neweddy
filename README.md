@@ -27,6 +27,7 @@ eddy-ng adds accurate Z-offset setting by physically making contact with the bui
   - [Example Print Start Macro](#example-print-start-macro)
   - [Eddy Duo via USB](#eddy-duo-via-usb)
   - [Eddy Duo via CAN Bus](#eddy-duo-via-can-bus)
+  - [Cartographer via CAN Bus](#cartographer-via-can-bus)
   - [Advanced: Multi-Pass Mesh with Spiral Path](#advanced-multi-pass-mesh-with-spiral-path)
   - [Advanced: Temperature Compensation + Backlash](#advanced-temperature-compensation--backlash)
 - [GCode Commands](#gcode-commands)
@@ -83,9 +84,9 @@ eddy-ng adds accurate Z-offset setting by physically making contact with the bui
 - **Pre-built firmware images** -- for Eddy Duo (USB, CAN 500k, CAN 1M)
 
 ### Installation
-- **Dual installation mode** -- patchless for Eddy Duo, traditional for other sensors
+- **Dual installation mode** -- patchless for Eddy Duo/Cartographer, traditional for other sensors
 - **Interactive installer** -- auto-detects Klipper/Kalico, guides through sensor selection
-- **pip-installable package** -- proper Python packaging with hatchling
+- **Scaffolding-based loading** -- thin import bridges in `klippy/extras/` that load eddy-ng directly from the cloned repo
 - **CI-built firmware** -- GitHub Actions pipeline builds RP2040 firmware automatically
 
 ## Requirements
@@ -144,9 +145,9 @@ The Eddy Duo has its own RP2040 microcontroller. No Klipper source patching is n
 
 | Step | Action |
 |---|---|
-| 1 | Installs eddy-ng as pip package into Klipper's virtualenv |
-| 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges) |
-| 3 | Offers to flash pre-built firmware to the RP2040 |
+| 1 | Installs Python dependencies (numpy) into Klipper's virtualenv |
+| 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges that load eddy-ng from the repo) |
+| 3 | Offers to flash firmware to the RP2040 (pre-built or build from source) |
 
 **Firmware flashing:**
 
@@ -202,8 +203,8 @@ The Cartographer probe has its own RP2040 MCU. No Klipper source patching or fir
 
 | Step | Action |
 |---|---|
-| 1 | Installs eddy-ng as pip package into Klipper's virtualenv |
-| 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges) |
+| 1 | Installs Python dependencies (numpy) into Klipper's virtualenv |
+| 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges that load eddy-ng from the repo) |
 
 Set `sensor_type: cartographer` in your config. See [Configuration](#configuration).
 
@@ -215,8 +216,8 @@ Sensors without their own MCU (Eddy Coil, bare LDC1612, etc.) require the custom
 
 | Step | Action |
 |---|---|
-| 1 | Installs eddy-ng as pip package into Klipper's virtualenv |
-| 2 | Creates scaffolding files in `klippy/extras/` |
+| 1 | Installs Python dependencies (numpy) into Klipper's virtualenv |
+| 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges that load eddy-ng from the repo) |
 | 3 | Links the C firmware module into Klipper's `src/` directory |
 | 4 | Patches Klipper's `src/Makefile` to compile the sensor driver |
 
@@ -436,6 +437,8 @@ z_hop: 10
 z_hop_speed: 10
 ```
 
+> **Toolchanger users:** If your toolchanger setup already defines `[homing_override]` (e.g. in a homing.cfg), you **cannot** use `[safe_z_home]` -- Klipper does not allow both simultaneously. Remove the `[safe_z_home]` section and handle Z homing inside your existing `[homing_override]` instead.
+
 ### Example Print Start Macro
 
 ```ini
@@ -495,10 +498,28 @@ canbus_uuid: XXXXXXXXXXXX
 [probe_eddy_ng my_eddy]
 sensor_type: btt_eddy
 i2c_mcu: eddy_duo
-i2c_bus: i2c0e
+i2c_bus: i2c0f
 x_offset: -38.0
 y_offset: -22.0
 ```
+
+> **I2C bus note:** The Eddy Duo typically uses `i2c0e` when connected via USB and `i2c0f` when connected via CAN bus. Check the BTT pinout documentation for your specific board revision.
+
+### Cartographer via CAN Bus
+
+```ini
+[mcu cartographer]
+canbus_uuid: XXXXXXXXXXXX
+
+[probe_eddy_ng my_eddy]
+sensor_type: cartographer
+i2c_mcu: cartographer
+i2c_bus: i2c0f
+x_offset: 0.0
+y_offset: 16.0
+```
+
+> **Cartographer note:** The Cartographer probe already runs its own Klipper firmware. No firmware flashing is needed -- just configure the MCU and probe section.
 
 ### Advanced: Multi-Pass Mesh with Spiral Path
 
@@ -803,17 +824,19 @@ See the [Print Start Macro](#example-print-start-macro) for an automated version
 
 ### Updating eddy-ng only
 
+Since eddy-ng loads directly from the cloned repo, updating is just a `git pull`:
+
 ```bash
 cd ~/eddy-ng
 git pull
 sudo systemctl restart klipper
 ```
 
-If you used the default installation, the pip package and scaffolding may need updating:
+If the scaffolding format changed (rare, noted in release notes), re-run the installer:
 
 ```bash
 cd ~/eddy-ng
-./install.sh   # Re-run installer to update pip package
+./install.sh
 sudo systemctl restart klipper
 ```
 
@@ -890,9 +913,9 @@ python3 install.py --uninstall
 
 | Component | Location |
 |---|---|
-| Python package | pip uninstall from Klipper virtualenv |
+| Python package | pip uninstall from Klipper virtualenv (if previously installed) |
 | Scaffolding files | `klippy/extras/probe_eddy_ng.py`, `klippy/extras/ldc1612_ng.py` |
-| Plugin package | `klippy/extras/probe_eddy_ng/` (or `klippy/plugins/` for Kalico) |
+| Plugin directory | `klippy/extras/probe_eddy_ng/` (or `klippy/plugins/` for Kalico) |
 | Sensor driver | `klippy/extras/ldc1612_ng.py` |
 | Firmware module | `src/sensor_ldc1612_ng.c` |
 | Makefile patch | Reverted in `src/Makefile` |
@@ -981,9 +1004,56 @@ Run `PROBE_EDDY_NG_CALIBRATE_THRESHOLD` to auto-tune the threshold. Lower thresh
 
 ### Klipper won't start after installation
 
-Check the Klipper log (`/tmp/klippy.log`) for import errors. Common causes:
+Check the Klipper log (`/tmp/klippy.log` or `~/printer_data/logs/klippy.log`) for import errors. Common causes:
 - numpy not installed in Klipper virtualenv: `~/klippy-env/bin/pip install numpy`
 - Sensor driver not compiled: re-run `./flash.sh` to rebuild firmware
+- Old eddy-ng pip package conflicting with repo imports: `~/klippy-env/bin/pip uninstall eddy-ng`
+
+### "homing_override and safe_z_homing cannot be used simultaneously"
+
+Klipper does not allow `[safe_z_home]` and `[homing_override]` in the same config. This commonly happens with **toolchanger setups**, where the toolchanger config already defines `[homing_override]` (e.g. in `homing.cfg`).
+
+**Fix:** Remove the `[safe_z_home]` section from your eddy-ng config and handle Z homing inside your existing `[homing_override]` macro instead. Example:
+
+```ini
+# In your homing_override, add Z homing via the eddy probe:
+[homing_override]
+gcode:
+    # ... existing XY homing logic ...
+    # Home Z using the eddy probe
+    G28 Z
+```
+
+### "attempted relative import with no known parent package"
+
+This usually means the eddy-ng pip package is installed alongside the repo-based scaffolding. The pip package's import paths can conflict with Klipper's module loading.
+
+**Fix:**
+```bash
+~/klippy-env/bin/pip uninstall eddy-ng
+sudo systemctl restart klipper
+```
+
+The installer already handles this automatically, but if you previously did a manual `pip install`, uninstall it.
+
+### "No module named 'probe'" / "No module named 'bus'"
+
+Klipper's extras modules (probe.py, bus.py, etc.) use relative imports and must be loaded as part of the `extras` package. This is handled automatically by eddy-ng's compatibility layer. If you see this error:
+
+1. Make sure you are using the latest eddy-ng version: `cd ~/eddy-ng && git pull`
+2. Re-run the installer: `./scripts/install.sh`
+3. Restart Klipper: `sudo systemctl restart klipper`
+
+### "Unknown pin chip name 'probe'"
+
+Your config still references a different probe plugin (e.g. `cartographer_eddy` or `probe_eddy_current`). The virtual endstop pin name follows the config section name.
+
+**Fix:** Make sure your `stepper_z` uses:
+```ini
+endstop_pin: probe:z_virtual_endstop
+```
+
+And that your config has `[probe_eddy_ng my_eddy]` (not `[cartographer_eddy ...]` or similar).
 
 ### Eddy Duo not detected
 
@@ -991,6 +1061,40 @@ Check the Klipper log (`/tmp/klippy.log`) for import errors. Common causes:
 2. Ensure the Duo is flashed with Klipper firmware (not stock BTT firmware)
 3. Try reflashing: `./scripts/flash-duo.sh`
 4. For CAN bus: verify `canbus_uuid` and CAN bus configuration
+
+### Pre-built firmware not available
+
+The `firmware/` directory may not contain pre-built binaries for your configuration. In that case, build from source:
+
+```bash
+./scripts/flash-duo.sh
+# Choose option 4: "Build from source"
+```
+
+The build script guides you through connection type, CAN baud rate, bootloader offset, and GPIO pin selection interactively.
+
+### Permission denied running install.sh
+
+If you cloned the repo on Windows and copied it to Linux, the execute permission bits may be missing:
+
+```bash
+chmod +x install.sh scripts/*.sh flash.sh uninstall.sh update-klipper.sh
+```
+
+### Checking logs remotely via Moonraker API
+
+If you don't have SSH access, you can read the Klipper log via Moonraker's HTTP API:
+
+```bash
+# Read the last 100 lines of klippy.log
+curl -s "http://<printer-ip>/server/files/klippy.log" | tail -100
+
+# Check printer status
+curl -s "http://<printer-ip>/printer/info"
+
+# List config files
+curl -s "http://<printer-ip>/server/files/list?root=config"
+```
 
 ---
 

@@ -9,25 +9,84 @@ eddy-ng adds accurate Z-offset setting by physically making contact with the bui
 3. **Precise tap** -- Just before printing (bed at print temp, nozzle warm but not hot), a precise Z-offset is determined by physically tapping the build surface. The nozzle touches the bed and the exact height is measured.
 4. **Temperature-compensated mesh** -- The difference between sensor reading and actual tap height is saved as an offset. This offset compensates for thermal drift during bed mesh scanning.
 
+---
+
+## Table of Contents
+
+- [Supported Hardware](#supported-hardware)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+  - [BTT Eddy Duo (RP2040)](#installation-btt-eddy-duo-rp2040)
+  - [Other Eddy Sensors](#installation-other-eddy-sensors)
+- [Configuration](#configuration)
+  - [Minimal Configuration](#minimal-configuration)
+  - [Full Configuration Reference](#full-configuration-reference)
+  - [Z Homing](#z-homing-configuration)
+  - [Bed Mesh](#bed-mesh-configuration)
+  - [Example Print Start Macro](#example-print-start-macro)
+  - [Eddy Duo via USB](#eddy-duo-via-usb)
+  - [Eddy Duo via CAN Bus](#eddy-duo-via-can-bus)
+  - [Advanced: Multi-Pass Mesh with Spiral Path](#advanced-multi-pass-mesh-with-spiral-path)
+  - [Advanced: Temperature Compensation + Backlash](#advanced-temperature-compensation--backlash)
+- [GCode Commands](#gcode-commands)
+  - [Calibration](#calibration)
+  - [Probing](#probing)
+  - [Configuration Commands](#configuration-commands)
+  - [Advanced Features](#advanced-features)
+  - [Command Details](#command-details)
+- [Typical Workflow](#typical-workflow)
+  - [First-Time Setup](#first-time-setup)
+  - [Before Every Print](#before-every-print)
+- [Updating](#updating)
+- [Uninstallation](#uninstallation)
+- [Project Structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Support](#support)
+- [License](#license)
+
+---
+
 ## Supported Hardware
 
-| Sensor Type | Description |
-|---|---|
-| `ldc1612` | TI LDC1612 inductive sensor |
-| `btt_eddy` | BigTreeTech Eddy probe |
-| `cartographer` | Cartographer probe |
-| `mellow_fly` | Mellow Fly probe |
-| `ldc1612_internal_clk` | LDC1612 with internal oscillator |
+| Sensor Type | Description | Installation Mode |
+|---|---|---|
+| `btt_eddy` | BigTreeTech Eddy Coil (I2C to main MCU) | Traditional (Klipper patching) |
+| `btt_eddy` | BigTreeTech Eddy Duo (own RP2040 MCU) | Patchless (pip + pre-built firmware) |
+| `ldc1612` | TI LDC1612 inductive sensor | Traditional |
+| `cartographer` | Cartographer probe | Traditional |
+| `mellow_fly` | Mellow Fly probe | Traditional |
+| `ldc1612_internal_clk` | LDC1612 with internal oscillator | Traditional |
+
+**BTT Eddy Duo** has its own RP2040 microcontroller and connects via USB or CAN bus as a separate Klipper MCU. This allows a patchless installation -- no Klipper source modifications are needed, just like the Cartographer.
+
+**BTT Eddy Coil** and other sensors connect via I2C to the printer's main MCU and require a Klipper Makefile patch to compile the custom sensor driver into the firmware.
 
 ## Features
 
+### Core
 - **Butterworth bandpass filter** for tap detection (MCU-side, real-time)
-- **Auto-threshold calibration** (`PROBE_EDDY_NG_CALIBRATE_THRESHOLD`) -- automatically finds the optimal tap sensitivity
+- **Auto-threshold calibration** -- automatically finds the optimal tap sensitivity
 - **Rapid bed mesh scanning** with lookahead motion planning
-- **JSON calibration format** -- human-readable, exact precision via hex floats, replaces legacy pickle
-- **Modular codebase** -- clean package structure with separated concerns
-- **No Klipper source modifications** -- runtime integration without sed patches
+- **JSON calibration format** -- human-readable, exact precision via hex floats
 - **Klipper + Kalico compatible** -- auto-detects and adapts to both firmware forks
+
+### Advanced (Cartographer-inspired)
+- **Temperature compensation** -- quadratic drift model, calibrated across multiple heights
+- **Named calibration models** -- save/load/switch calibrations for different build plates
+- **Advanced mesh path algorithms** -- snake, alternating snake, spiral, random traversal
+- **Multi-pass mesh scanning** -- multiple passes with median averaging for higher accuracy
+- **Z-axis backlash estimation** -- statistical measurement with Welch's t-test
+- **Alpha-beta tracking filter** -- recursive smoothing of height measurements
+- **Axis twist compensation** -- automatic integration with Klipper's axis_twist_compensation
+- **Data streaming with CSV export** -- session-based raw data capture for analysis
+- **Pre-built firmware images** -- for Eddy Duo (USB, CAN 500k, CAN 1M)
+
+### Installation
+- **Dual installation mode** -- patchless for Eddy Duo, traditional for other sensors
+- **Interactive installer** -- auto-detects Klipper/Kalico, guides through sensor selection
+- **pip-installable package** -- proper Python packaging with hatchling
+- **CI-built firmware** -- GitHub Actions pipeline builds RP2040 firmware automatically
 
 ## Requirements
 
@@ -37,69 +96,125 @@ eddy-ng adds accurate Z-offset setting by physically making contact with the bui
 - An LDC1612-based eddy current probe
 
 Optional:
-- `scipy` -- only needed for custom Butterworth filter parameters (default filter coefficients are built-in)
-- `plotly` -- for generating calibration and tap diagnostic plots
+- `scipy` -- for custom Butterworth filter parameters and temperature compensation model fitting
+- `plotly` -- for calibration and tap diagnostic plots
 
 ---
 
 ## Installation
 
-### 1. Clone the repository
+### Interactive Installation (Recommended)
+
+The installer auto-detects your sensor type and chooses the right installation method:
 
 ```bash
 cd ~
 git clone https://github.com/vvuk/eddy-ng.git
 cd ~/eddy-ng
-```
-
-### 2. Run the install script
-
-```bash
 ./install.sh
 ```
 
-The script auto-detects whether you're running Klipper (`~/klipper`) or Kalico (`~/kalico`).
+The installer will ask:
 
-If your Klipper installation is in a non-standard location:
+```
+Which Eddy sensor do you have?
+  1) BTT Eddy Duo (own RP2040 MCU, USB/CAN connection)
+  2) Other Eddy sensor (Eddy Coil, LDC1612, etc.)
+```
+
+Choose your sensor type and follow the prompts.
+
+If Klipper is in a non-standard location:
 
 ```bash
 ./install.sh /path/to/klipper
 ```
 
+### Installation: BTT Eddy Duo (RP2040)
+
+The Eddy Duo has its own RP2040 microcontroller. No Klipper source patching is needed.
+
 **What the installer does:**
 
-| Component | Destination | Purpose |
-|---|---|---|
-| `probe_eddy_ng/` (package) | `klippy/extras/probe_eddy_ng/` | Python probe plugin |
-| `ldc1612_ng.py` | `klippy/extras/ldc1612_ng.py` | Sensor driver |
-| `sensor_ldc1612_ng.c` | `src/sensor_ldc1612_ng.c` | MCU firmware module |
+| Step | Action |
+|---|---|
+| 1 | Installs eddy-ng as pip package into Klipper's virtualenv |
+| 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges) |
+| 3 | Offers to flash pre-built firmware to the RP2040 |
 
-By default, files are **symlinked** (so `git pull` updates apply immediately). Use `--copy` to copy files instead:
+**Firmware flashing:**
+
+The installer will offer to flash the RP2040. You can also flash later:
 
 ```bash
-./install.sh --copy
+./scripts/flash-duo.sh
 ```
 
-**Kalico users:** The installer detects Kalico automatically and installs to `klippy/plugins/` instead. Symlinks are used so updates from `git pull` apply without reinstalling.
+Pre-built firmware variants are available:
 
-### 3. Build and flash MCU firmware
+| File | Connection | Bootloader | CAN Pins |
+|---|---|---|---|
+| `eddy-duo-usb.uf2` | USB | none | -- |
+| `eddy-duo-canbus-500k.uf2` | CAN 500k | none | TX=GPIO1, RX=GPIO0 |
+| `eddy-duo-canbus-1m.uf2` | CAN 1M | none | TX=GPIO1, RX=GPIO0 |
+| `eddy-duo-katapult-canbus-500k.bin` | CAN 500k | Katapult | TX=GPIO1, RX=GPIO0 |
+| `eddy-duo-katapult-canbus-1m.bin` | CAN 1M | Katapult | TX=GPIO1, RX=GPIO0 |
 
-After installation, you need to rebuild the Klipper MCU firmware to include the eddy-ng sensor driver. Use the automated flash script:
+> **CAN GPIO pins:** Pre-built CAN firmware uses the BTT Eddy Duo defaults (TX=GPIO1, RX=GPIO0). If your board has different CAN pins, use `./scripts/flash-duo.sh --build` to configure them manually.
+
+> **Katapult bootloader:** Variants with "katapult" in the name use flash offset `0x10004000` (16KB reserved for the Katapult bootloader). The Katapult bootloader must be flashed on the RP2040 **before** using these images.
+
+**Flash methods:**
+
+| Method | Format | Bootloader | Use case |
+|--------|--------|------------|----------|
+| BOOTSEL | `.uf2` | **Overwrites** bootloader | First-time flash, USB connection |
+| Katapult (CAN) | `.bin` | **Preserved** | CAN bus updates without physical access |
+| Manual copy | any | depends | Custom setups |
+
+> **Important:** BOOTSEL mode overwrites the entire flash including any bootloader. If you have Katapult installed and want to keep it, use Katapult flash instead. The script warns about this automatically.
+
+> **Important:** Katapult expects the firmware at a specific offset (`0x10004000`). Flashing a firmware built without bootloader offset via Katapult will likely not boot. The script warns about this mismatch.
+
+**Build from source** (for custom CAN pins or Klipper version matching):
+
+```bash
+./scripts/flash-duo.sh --build
+```
+
+The build script asks for connection type, CAN pins, and bootloader offset interactively. For CAN connections, it also offers to scan for the CAN UUID via Katapult. You can override CAN pins via environment variables:
+
+```bash
+EDDY_CAN_TX_GPIO=5 EDDY_CAN_RX_GPIO=4 ./scripts/flash-duo.sh --build
+```
+
+### Installation: Other Eddy Sensors
+
+Sensors without their own MCU (Eddy Coil, bare LDC1612, etc.) require the custom sensor driver to be compiled into the printer's main MCU firmware.
+
+**What the installer does:**
+
+| Step | Action |
+|---|---|
+| 1 | Installs eddy-ng as pip package into Klipper's virtualenv |
+| 2 | Creates scaffolding files in `klippy/extras/` |
+| 3 | Links the C firmware module into Klipper's `src/` directory |
+| 4 | Patches Klipper's `src/Makefile` to compile the sensor driver |
+
+**After installation, rebuild and flash the MCU firmware:**
 
 ```bash
 cd ~/eddy-ng
 ./flash.sh
 ```
 
-The script automatically:
+The flash script:
 - Detects your Klipper/Kalico installation
-- Ensures eddy-ng is installed
-- Opens `menuconfig` if no `.config` exists (select your MCU and enable LDC1612 support)
-- Enables `CONFIG_WANT_LDC1612` if not already set
+- Opens `menuconfig` if needed (enable LDC1612 support under Sensors)
 - Builds the firmware
-- Auto-detects connected devices (USB, DFU, CAN) and offers flash options
+- Auto-detects connected devices and offers flash options
 
-**Common options:**
+**Common flash options:**
 
 ```bash
 ./flash.sh                              # Full build + interactive flash
@@ -107,220 +222,33 @@ The script automatically:
 ./flash.sh --menuconfig                 # Force menuconfig before build
 ./flash.sh --clean                      # Clean build first
 ./flash.sh --flash-device /dev/ttyACM0  # Specify flash device directly
-./flash.sh /path/to/klipper             # Custom Klipper directory
 ```
 
-**Supported flash methods:**
-- USB Serial (auto-detected via `/dev/serial/by-id/`)
-- DFU mode (via `dfu-util`)
-- CAN bus (via Katapult/CANboot)
-- SD card copy
-- Manual device path
+**Supported flash methods:** USB Serial, DFU, CAN bus (Katapult/CANboot), SD card, manual device path.
 
-**Manual build (alternative):**
+### Command-Line Flags
 
 ```bash
-cd ~/klipper
-make menuconfig   # Enable LDC1612 support under Sensors
-make
-make flash FLASH_DEVICE=/dev/serial/by-id/YOUR_DEVICE
+./install.sh              # Interactive mode (recommended)
+./install.sh --duo        # Skip prompt, install for Eddy Duo
+./install.sh --other      # Skip prompt, install for other sensors
+./install.sh --uninstall  # Uninstall everything
 ```
 
-### 4. Configure printer.cfg
+### Legacy Installation
 
-Add the eddy-ng probe section to your `printer.cfg`. See [Example Configuration](#example-configuration) below for a complete reference.
-
-### 5. Restart Klipper
+The old `install.py` is still available for backward compatibility:
 
 ```bash
-sudo systemctl restart klipper
+python3 install.py                # Symlink install (traditional)
+python3 install.py --copy         # Copy files instead of symlinking
+python3 install.py --firmware-only  # Only install C firmware + patch Makefile
+python3 install.py --uninstall    # Uninstall
 ```
 
 ---
 
-## Updating
-
-### Updating eddy-ng only
-
-```bash
-cd ~/eddy-ng
-git pull
-sudo systemctl restart klipper
-```
-
-If you used the default symlink installation, `git pull` is sufficient -- symlinks point to the updated files. If you used `--copy`, re-run `./install.sh` after pulling.
-
-### Updating Klipper (important!)
-
-A Klipper update (`git pull` in `~/klipper`) **overwrites `src/Makefile`**, which removes the eddy-ng firmware patch. Use the update script to handle this automatically:
-
-```bash
-cd ~/eddy-ng
-./update-klipper.sh
-```
-
-The script:
-1. Updates eddy-ng (`git pull`)
-2. Updates Klipper (`git pull`) -- stashes local changes if needed
-3. Re-installs eddy-ng (re-patches `src/Makefile`, re-links files)
-4. **Asks** whether to rebuild firmware -- detects if `src/` files changed and recommends accordingly
-5. **Asks** whether to flash the rebuilt firmware
-6. **Asks** whether to restart Klipper service
-
-```
-=== Step 4: Firmware ===
-
-[WARN] Klipper was updated (a1b2c3d -> e4f5g6h).
-[WARN] Detected 3 changed files in src/ or mcu.py -- firmware rebuild likely needed!
-
-Rebuild MCU firmware? [y/N] y
-[OK] Firmware rebuilt successfully
-
-Flash firmware to MCU? [y/N] n
-[INFO] Run ./flash.sh later to flash.
-```
-
-Use `--yes` to skip all prompts (auto-yes):
-
-```bash
-./update-klipper.sh --yes    # Non-interactive: update + rebuild + flash + restart
-```
-
-**Manual Klipper update (alternative):**
-
-```bash
-cd ~/klipper && git pull
-cd ~/eddy-ng && ./install.sh     # Re-patch Makefile
-sudo systemctl restart klipper   # Rebuild firmware only if needed
-```
-
----
-
-## Uninstallation
-
-### Using the uninstall script
-
-```bash
-cd ~/eddy-ng
-./uninstall.sh
-```
-
-Or with a custom Klipper path:
-
-```bash
-./uninstall.sh /path/to/klipper
-```
-
-### Manual uninstallation via install.py
-
-```bash
-cd ~/eddy-ng
-python3 install.py --uninstall
-```
-
-**What the uninstaller does:**
-
-1. Removes `probe_eddy_ng/` package from `klippy/extras/` (or `klippy/plugins/` for Kalico)
-2. Removes `ldc1612_ng.py` from `klippy/extras/`
-3. Removes `sensor_ldc1612_ng.c` from `src/`
-4. Reverts the `src/Makefile` patch
-5. Cleans up legacy single-file installations (`probe_eddy_ng.py`)
-6. Reverts any legacy `bed_mesh.py` patches (from older eddy-ng versions)
-
-After uninstalling, remove the `[probe_eddy_ng ...]` section from your `printer.cfg` and restart Klipper.
-
----
-
-## Example Configuration
-
-Below is a complete `printer.cfg` example with all available options and their defaults. You only need to set values that differ from the defaults.
-
-```ini
-# ============================================================================
-# eddy-ng probe configuration
-# ============================================================================
-# Replace "my_eddy" with your preferred name. This name is used in
-# all GCode commands (e.g. PROBE_EDDY_NG_TAP).
-# ============================================================================
-
-[probe_eddy_ng my_eddy]
-
-# --- Sensor ---
-# Type of LDC1612-based sensor connected.
-# Options: ldc1612, btt_eddy, cartographer, mellow_fly, ldc1612_internal_clk
-sensor_type: btt_eddy
-
-# I2C bus configuration (depends on your board wiring)
-i2c_mcu: mcu               # MCU the sensor is connected to
-i2c_bus: i2c3a              # I2C bus name
-i2c_speed: 400000           # I2C bus speed (Hz)
-
-# --- Probe Offsets ---
-# Physical offset between the probe coil center and the nozzle tip.
-# MUST be set correctly -- eddy-ng will error if both are 0.0
-# (unless allow_unsafe is True).
-x_offset: -38.0
-y_offset: -22.0
-
-# --- Movement Speeds ---
-#probe_speed: 5.0           # Speed for Z probing moves (mm/s)
-#lift_speed: 10.0           # Speed for Z lift moves (mm/s)
-#move_speed: 50.0           # Speed for XY positioning moves (mm/s)
-
-# --- Z Homing ---
-# These control the coarse Z-home via the eddy sensor.
-#home_trigger_height: 2.0             # Height at which homing triggers (mm)
-#home_trigger_safe_start_offset: 1.0  # Extra height above trigger to start (mm)
-
-# --- Tap Detection ---
-# Tap mode: "butter" (Butterworth bandpass filter) or "wma" (weighted moving average).
-# Butter mode is recommended -- it is more precise and less noise-sensitive.
-#tap_mode: butter
-
-# Tap threshold -- sensitivity for detecting the nozzle touching the bed.
-# Lower = more sensitive, higher = less sensitive.
-# Use PROBE_EDDY_NG_CALIBRATE_THRESHOLD to find the optimal value automatically.
-#tap_threshold: 250.0       # Default for butter mode (1000.0 for wma mode)
-
-#tap_speed: 3.0             # Speed for tap moves (mm/s)
-#tap_start_z: 3.0           # Z height to start tap from (mm)
-#tap_target_z: -0.250       # Z target for tap (slightly below bed, mm)
-#tap_adjust_z: 0.0          # Additional Z adjustment after tap (mm)
-
-# --- Tap Sampling ---
-#tap_samples: 3             # Number of consistent tap samples required
-#tap_max_samples: 5         # Maximum tap attempts before failure
-#tap_samples_stddev: 0.020  # Maximum standard deviation between samples (mm)
-#tap_use_median: False      # Use median instead of mean for tap result
-
-# --- Butterworth Filter (advanced) ---
-# Only change these if you understand bandpass filter design.
-# Custom values require scipy to be installed.
-#tap_butter_lowcut: 5.0     # Low cutoff frequency (Hz)
-#tap_butter_highcut: 25.0   # High cutoff frequency (Hz)
-#tap_butter_order: 2        # Filter order
-
-# --- Drive Current ---
-# LDC1612 drive current register (0-31). 0 = use sensor default.
-# Different currents can be used for regular probing vs. tap.
-#reg_drive_current: 0
-#tap_drive_current: 0
-
-# --- Scanning / Bed Mesh ---
-#scan_sample_time: 0.100        # Sample time per point during scanning (s)
-#scan_sample_time_delay: 0.050  # Delay between scan samples (s)
-
-# --- Calibration ---
-#calibration_z_max: 15.0    # Maximum Z height during calibration (mm)
-#calibration_points: 150    # Number of points to sample during calibration
-
-# --- Safety & Debug ---
-#allow_unsafe: False         # Allow x_offset=0 y_offset=0 (probe at nozzle)
-#debug: True                 # Enable debug logging
-#max_errors: 0               # Max sensor errors before aborting (0=unlimited)
-#write_tap_plot: False       # Write HTML plot of final tap data
-#write_every_tap_plot: False # Write HTML plot of every individual tap
-```
+## Configuration
 
 ### Minimal Configuration
 
@@ -335,19 +263,126 @@ x_offset: -38.0
 y_offset: -22.0
 ```
 
-### Homing Configuration
+### Full Configuration Reference
 
-To use the eddy probe for Z homing, add a virtual endstop:
+All available options with their defaults. Only set values that differ from defaults.
+
+```ini
+[probe_eddy_ng my_eddy]
+
+# ── Sensor ──────────────────────────────────────────────────────────
+# Options: ldc1612, btt_eddy, cartographer, mellow_fly, ldc1612_internal_clk
+sensor_type: btt_eddy
+
+# I2C bus configuration (depends on your board wiring)
+i2c_mcu: mcu
+i2c_bus: i2c3a
+i2c_speed: 400000
+
+# ── Probe Offsets ───────────────────────────────────────────────────
+# Physical offset between probe coil center and nozzle tip (mm).
+# MUST be non-zero unless allow_unsafe: True.
+x_offset: -38.0
+y_offset: -22.0
+
+# ── Movement Speeds ────────────────────────────────────────────────
+#probe_speed: 5.0           # Z probing speed (mm/s)
+#lift_speed: 10.0           # Z lift speed (mm/s)
+#move_speed: 50.0           # XY positioning speed (mm/s)
+
+# ── Z Homing ───────────────────────────────────────────────────────
+#home_trigger_height: 2.0             # Homing trigger height (mm)
+#home_trigger_safe_start_offset: 1.0  # Extra height above trigger (mm)
+
+# ── Tap Detection ──────────────────────────────────────────────────
+# Mode: "butter" (Butterworth bandpass, recommended) or "wma" (weighted moving average)
+#tap_mode: butter
+# Tap threshold -- lower = more sensitive, higher = less sensitive.
+# Use PROBE_EDDY_NG_CALIBRATE_THRESHOLD to auto-find the optimal value.
+#tap_threshold: 250.0       # Default for butter (1000.0 for wma)
+#tap_speed: 3.0             # Tap speed (mm/s)
+#tap_start_z: 3.0           # Z height to start tap from (mm)
+#tap_target_z: -0.250       # Z target for tap (mm, slightly below bed)
+#tap_adjust_z: 0.0          # Additional Z adjustment after tap (mm)
+#tap_time_position: 0.3     # Time position for trigger detection (0.0-1.0)
+
+# ── Tap Sampling ───────────────────────────────────────────────────
+#tap_samples: 3             # Consistent tap samples required
+#tap_max_samples: 5         # Max tap attempts before failure
+#tap_samples_stddev: 0.020  # Max standard deviation between samples (mm)
+#tap_use_median: False      # Use median instead of mean
+
+# ── Butterworth Filter (advanced) ──────────────────────────────────
+# Custom values require scipy. Default coefficients are built-in.
+#tap_butter_lowcut: 5.0     # Low cutoff frequency (Hz)
+#tap_butter_highcut: 25.0   # High cutoff frequency (Hz)
+#tap_butter_order: 2        # Filter order
+
+# ── Drive Current ──────────────────────────────────────────────────
+# LDC1612 drive current register (0-31). 0 = sensor default.
+#reg_drive_current: 0       # For regular probing
+#tap_drive_current: 0       # For tap detection
+
+# ── Scanning / Bed Mesh ───────────────────────────────────────────
+#scan_sample_time: 0.100        # Sample time per point (s)
+#scan_sample_time_delay: 0.050  # Delay between samples (s)
+
+# ── Mesh Path (advanced) ──────────────────────────────────────────
+# Algorithm for traversing mesh probe points during scanning.
+# Options: snake, alternating_snake, spiral, random
+#mesh_path: snake
+# Primary direction for snake paths: x or y
+#mesh_direction: x
+# Number of scan passes (>1 uses median averaging)
+#mesh_runs: 1
+# Height above bed for mesh scanning (mm)
+#mesh_height: 3.0
+
+# ── Calibration ────────────────────────────────────────────────────
+#calibration_z_max: 15.0    # Max Z height during calibration (mm)
+#calibration_points: 150    # Number of calibration sample points
+
+# ── Backlash Compensation ─────────────────────────────────────────
+# Z-axis backlash compensation (mm). Use PROBE_EDDY_NG_ESTIMATE_BACKLASH
+# to measure automatically.
+#z_backlash: 0.0
+
+# ── Alpha-Beta Filter ─────────────────────────────────────────────
+# Recursive tracking filter for smoothing height measurements.
+# alpha: position smoothing (0.0 = no filter, 1.0 = no smoothing)
+# beta: velocity tracking (small values = slow response to velocity changes)
+#filter_alpha: 0.5
+#filter_beta: 1e-6
+
+# ── Temperature Compensation ──────────────────────────────────────
+# Calibrated via PROBE_EDDY_NG_TEMPERATURE_CALIBRATE. Saved automatically.
+#temperature_compensation:
+
+# ── Safety & Debug ─────────────────────────────────────────────────
+#allow_unsafe: False         # Allow x_offset=0 y_offset=0
+#debug: True                 # Debug logging
+#max_errors: 0               # Max sensor errors (0=unlimited)
+#write_tap_plot: False       # Write HTML plot of final tap
+#write_every_tap_plot: False # Write HTML plot of every tap
+```
+
+### Z Homing Configuration
+
+Use the eddy probe as Z endstop (virtual endstop):
 
 ```ini
 [stepper_z]
+# ... your existing stepper_z config ...
 endstop_pin: probe:z_virtual_endstop
-# Remove or comment out any existing position_endstop line
+# Comment out or remove any existing position_endstop:
 #position_endstop: 0
 homing_speed: 5
+position_min: -2    # Allow slight negative Z for tap target
 ```
 
 ### Bed Mesh Configuration
+
+Standard Klipper bed mesh -- eddy-ng integrates automatically:
 
 ```ini
 [bed_mesh]
@@ -359,32 +394,136 @@ probe_count: 15, 15
 algorithm: bicubic
 ```
 
-### Print Start Macro Example
+### Safe Z Home
+
+Home Z in the center of the bed:
+
+```ini
+[safe_z_home]
+home_xy_position: 175, 175
+speed: 100
+z_hop: 10
+z_hop_speed: 10
+```
+
+### Example Print Start Macro
 
 ```ini
 [gcode_macro PRINT_START]
 gcode:
+    {% set bed_temp = params.BED_TEMP|default(60)|float %}
+    {% set extruder_temp = params.EXTRUDER_TEMP|default(200)|float %}
+
     # Home all axes
     G28
 
-    # Heat bed to print temperature
-    M190 S{params.BED_TEMP|default(60)}
+    # Heat bed and wait
+    M190 S{bed_temp}
 
-    # Warm nozzle (not full temp -- avoid oozing during tap)
+    # Warm nozzle to 150C (no oozing, no build plate damage)
     M109 S150
 
-    # Perform tap to get precise Z offset at print temperature
+    # Precise Z offset via tap at print temperature
     PROBE_EDDY_NG_TAP
 
-    # Bed mesh with temperature-compensated offset
+    # Temperature-compensated bed mesh
     BED_MESH_CALIBRATE
 
-    # Heat to full print temperature
-    M109 S{params.EXTRUDER_TEMP|default(200)}
+    # Full nozzle temperature
+    M109 S{extruder_temp}
 
-    # Start printing
-    G0 Z2 F3000
+    # Ready to print
+    G0 Z5 F3000
 ```
+
+Call from your slicer's start G-Code:
+```
+PRINT_START BED_TEMP=60 EXTRUDER_TEMP=200
+```
+
+### Eddy Duo via USB
+
+```ini
+# The Eddy Duo appears as a separate MCU
+[mcu eddy_duo]
+serial: /dev/serial/by-id/usb-Klipper_rp2040_XXXXXXXXXXXX-if00
+
+[probe_eddy_ng my_eddy]
+sensor_type: btt_eddy
+i2c_mcu: eddy_duo
+i2c_bus: i2c0e
+x_offset: -38.0
+y_offset: -22.0
+```
+
+### Eddy Duo via CAN Bus
+
+```ini
+[mcu eddy_duo]
+canbus_uuid: XXXXXXXXXXXX
+
+[probe_eddy_ng my_eddy]
+sensor_type: btt_eddy
+i2c_mcu: eddy_duo
+i2c_bus: i2c0e
+x_offset: -38.0
+y_offset: -22.0
+```
+
+### Advanced: Multi-Pass Mesh with Spiral Path
+
+For maximum accuracy at the cost of time:
+
+```ini
+[probe_eddy_ng my_eddy]
+sensor_type: btt_eddy
+i2c_mcu: eddy_duo
+i2c_bus: i2c0e
+x_offset: -38.0
+y_offset: -22.0
+
+# Use spiral path with 3 passes (median averaged)
+mesh_path: spiral
+mesh_runs: 3
+mesh_height: 3.0
+
+# Smooth readings with alpha-beta filter
+filter_alpha: 0.6
+filter_beta: 1e-5
+```
+
+### Advanced: Temperature Compensation + Backlash
+
+For environments with large temperature swings:
+
+```ini
+[probe_eddy_ng my_eddy]
+sensor_type: btt_eddy
+i2c_mcu: eddy_duo
+i2c_bus: i2c0e
+x_offset: -38.0
+y_offset: -22.0
+
+# Backlash compensation (measured with PROBE_EDDY_NG_ESTIMATE_BACKLASH)
+z_backlash: 0.015
+
+# Temperature compensation is auto-saved after running
+# PROBE_EDDY_NG_TEMPERATURE_CALIBRATE
+# temperature_compensation: (auto-saved)
+```
+
+### Axis Twist Compensation
+
+eddy-ng automatically integrates with Klipper's `axis_twist_compensation` module. If configured, twist corrections are applied during bed mesh scanning:
+
+```ini
+[axis_twist_compensation]
+calibrate_start_x: 30
+calibrate_end_x: 320
+calibrate_y: 175
+```
+
+No additional eddy-ng configuration is needed -- the correction is applied automatically whenever `axis_twist_compensation` is loaded.
 
 ---
 
@@ -400,7 +539,9 @@ gcode:
 | `PROBE_EDDY_NG_CALIBRATION_STATUS` | Display calibration information |
 | `PROBE_EDDY_NG_CLEAR_CALIBRATION` | Clear all calibration data |
 | `PROBE_EDDY_NG_TEST_DRIVE_CURRENT` | Test a specific drive current |
-| `PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT` | Test all DCs and find optimal for homing + tap |
+| `PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT` | Test all DCs, find optimal for homing + tap |
+| `PROBE_EDDY_NG_TEMPERATURE_CALIBRATE` | Calibrate temperature compensation model |
+| `PROBE_EDDY_NG_ESTIMATE_BACKLASH` | Measure Z-axis backlash statistically |
 
 ### Probing
 
@@ -411,66 +552,186 @@ gcode:
 | `PROBE_EDDY_NG_PROBE_ACCURACY` | Test probe repeatability |
 | `PROBE_EDDY_NG_TAP` | Precise Z-offset by touching the bed |
 
-### Configuration
+### Configuration Commands
 
 | Command | Description |
 |---|---|
-| `PROBE_EDDY_NG_STATUS` | Show current status and last readings |
-| `PROBE_EDDY_NG_SET_TAP_OFFSET` | Set/clear the tap offset for scanning |
+| `PROBE_EDDY_NG_STATUS` | Show status and last readings |
+| `PROBE_EDDY_NG_SET_TAP_OFFSET` | Set/clear tap offset for scanning |
 | `PROBE_EDDY_NG_SET_TAP_ADJUST_Z` | Set additional tap Z adjustment |
 | `Z_OFFSET_APPLY_PROBE` | Apply current G-Code Z offset to `tap_adjust_z` |
 
-### Auto-Threshold Calibration
+### Advanced Features
 
-`PROBE_EDDY_NG_CALIBRATE_THRESHOLD` performs an ascending search to find the optimal tap threshold automatically:
+| Command | Description |
+|---|---|
+| `PROBE_EDDY_NG_MODEL` | Manage named calibration models |
+| `PROBE_EDDY_NG_STREAM` | Manage data streaming sessions |
+
+### Quick Aliases
+
+| Alias | Full Command |
+|---|---|
+| `PES` | `PROBE_EDDY_NG_STATUS` |
+| `PEP` | `PROBE_EDDY_NG_PROBE` |
+| `PEPS` | `PROBE_EDDY_NG_PROBE_STATIC` |
+| `PETAP` | `PROBE_EDDY_NG_TAP` |
+
+### Command Details
+
+#### PROBE_EDDY_NG_CALIBRATE_THRESHOLD
+
+Performs an ascending search to find the optimal tap threshold automatically:
 
 ```
-PROBE_EDDY_NG_CALIBRATE_THRESHOLD [MODE=butter] [START=50] [MAX=2000] [SPEED=3.0] [SCREENING_SAMPLES=5] [VERIFICATION_SAMPLES=10] [SAMPLE_RANGE=0.010]
+PROBE_EDDY_NG_CALIBRATE_THRESHOLD [MODE=butter] [START=50] [MAX=2000] [SPEED=3.0]
+    [SCREENING_SAMPLES=5] [VERIFICATION_SAMPLES=10] [SAMPLE_RANGE=0.010]
 ```
 
 | Parameter | Default (butter) | Default (wma) | Description |
 |---|---|---|---|
-| `MODE` | `butter` | - | Detection mode: `butter` or `wma` |
-| `START` | `50` | `200` | Starting threshold value |
+| `MODE` | `butter` | - | Detection mode |
+| `START` | `50` | `200` | Starting threshold |
 | `MAX` | `2000` | `10000` | Maximum threshold to test |
 | `SPEED` | `3.0` | `3.0` | Tap speed (mm/s) |
 | `SCREENING_SAMPLES` | `5` | `5` | Quick screening taps per threshold |
 | `VERIFICATION_SAMPLES` | `10` | `10` | Full verification taps |
-| `SAMPLE_RANGE` | `0.010` | `0.010` | Required Z range (mm) for acceptance |
+| `SAMPLE_RANGE` | `0.010` | `0.010` | Required Z range (mm) |
 
-The calibrator tests thresholds with adaptive step sizes (larger steps when far from a working value, smaller steps when close). Each threshold goes through a quick screening phase, followed by full verification if screening passes. The first threshold that passes both phases is saved. Run `SAVE_CONFIG` afterwards to persist.
+Tests thresholds with adaptive step sizes. Each threshold goes through screening, then full verification. The first passing threshold is saved. Run `SAVE_CONFIG` afterwards.
 
-### Drive Current Optimization
+#### PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT
 
-`PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT` tests all drive currents in a range and selects the optimal one for both homing and tap:
+Tests all drive currents and selects the optimal one for homing and tap:
 
 ```
-PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT [START_DC=1] [END_DC=31] [TAP_VERIFY=5] [TOP_CANDIDATES=3] [MODE=butter] [SAVE=1] [DEBUG=0]
+PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT [START_DC=1] [END_DC=31] [TAP_VERIFY=5]
+    [TOP_CANDIDATES=3] [MODE=butter] [SAVE=1] [DEBUG=0]
 ```
 
 | Parameter | Default | Description |
 |---|---|---|
 | `START_DC` | `1` | First drive current to test |
 | `END_DC` | `31` | Last drive current to test |
-| `TAP_VERIFY` | `5` | Number of real test taps per top candidate (0 to skip) |
-| `TOP_CANDIDATES` | `3` | How many top DCs to verify with real taps |
-| `MODE` | `butter` | Tap mode for verification (`butter` or `wma`) |
-| `SAVE` | `1` | Auto-save results (set 0 to preview only) |
-| `DEBUG` | `0` | Write debug files for each DC |
+| `TAP_VERIFY` | `5` | Real test taps per top candidate |
+| `TOP_CANDIDATES` | `3` | How many top DCs to verify |
+| `MODE` | `butter` | Tap mode for verification |
+| `SAVE` | `1` | Auto-save results |
+| `DEBUG` | `0` | Write debug files |
 
-The optimization runs in two phases:
+**Phase 1 -- Calibration sweep:** Full Z sweep per DC, scored on RMSE, frequency spread, height range.
 
-**Phase 1 -- Calibration sweep:** For each drive current, a full Z sweep is performed and evaluated on:
-- **RMSE** -- fit quality (lower is better)
-- **Frequency spread** -- signal dynamic range (higher is better)
-- **Height range** -- must cover the required range for homing (0.5-5.0mm) or tap (0.025-3.0mm)
+**Phase 2 -- Tap verification:** Top candidates tested with real taps, scored on range, stddev, success rate.
 
-**Phase 2 -- Tap verification:** The top `TOP_CANDIDATES` are tested with real taps. Each candidate performs `TAP_VERIFY` actual nozzle taps and is scored on:
-- **Tap range** -- spread of Z values (lower is better)
-- **Tap stddev** -- standard deviation of Z values (lower is better)
-- **Success rate** -- percentage of taps that triggered correctly
+Run `SAVE_CONFIG` afterwards.
 
-The best DC for homing and tap are selected independently and saved as `reg_drive_current` and `tap_drive_current`. Run `SAVE_CONFIG` afterwards to persist.
+#### PROBE_EDDY_NG_TEMPERATURE_CALIBRATE
+
+Calibrates a temperature drift compensation model. Requires scipy.
+
+```
+PROBE_EDDY_NG_TEMPERATURE_CALIBRATE [MIN_TEMP=40] [MAX_TEMP=60] [BED_TEMP=90]
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `MIN_TEMP` | `40` | Start collecting data at this temperature (C) |
+| `MAX_TEMP` | `60` | Stop collecting data at this temperature (C) |
+| `BED_TEMP` | `90` | Bed heater target temperature (C) |
+
+The procedure:
+1. For each calibration height (1, 2, 3 mm):
+   - Cools down to `MIN_TEMP` (fan on, heater off)
+   - Heats bed to `BED_TEMP` (fan off)
+   - Collects frequency-temperature pairs while heating through `MIN_TEMP` to `MAX_TEMP`
+2. Fits a quadratic compensation model from the collected data
+3. Saves the model. Run `SAVE_CONFIG` to persist.
+
+**This takes 30-60 minutes.** Do not touch the printer during calibration.
+
+Once calibrated, temperature compensation is applied automatically to all probe readings.
+
+#### PROBE_EDDY_NG_ESTIMATE_BACKLASH
+
+Measures Z-axis backlash by probing from both directions and applying Welch's t-test:
+
+```
+PROBE_EDDY_NG_ESTIMATE_BACKLASH [ITERATIONS=10] [DELTA=0.5] [SPEED=3.0] [CALIBRATE=0]
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ITERATIONS` | `10` | Number of measurement pairs (up+down) |
+| `DELTA` | `0.5` | Distance to travel in each direction (mm) |
+| `SPEED` | `3.0` | Measurement speed (mm/s) |
+| `CALIBRATE` | `0` | Set to 1 to auto-save `z_backlash` if significant |
+
+Reports:
+- Mean height from above vs. from below
+- Standard deviation for each direction
+- t-statistic and degrees of freedom
+- Whether the backlash is statistically significant (|t| >= 2.0, approximately p <= 0.05)
+
+If `CALIBRATE=1` and the result is significant, `z_backlash` is updated. Run `SAVE_CONFIG` afterwards.
+
+#### PROBE_EDDY_NG_MODEL
+
+Manage named calibration models -- useful for switching between different build plates:
+
+```
+PROBE_EDDY_NG_MODEL ACTION=SAVE NAME=pei_sheet
+PROBE_EDDY_NG_MODEL ACTION=LOAD NAME=textured_pei
+PROBE_EDDY_NG_MODEL ACTION=LIST
+PROBE_EDDY_NG_MODEL ACTION=DELETE NAME=old_model
+```
+
+| Action | Description |
+|---|---|
+| `SAVE` | Save current calibration under a name |
+| `LOAD` | Load a saved model as active calibration |
+| `LIST` | List all saved model names |
+| `DELETE` | Delete a saved model |
+
+Models are stored in the printer config. Run `SAVE_CONFIG` after SAVE or DELETE.
+
+**Example workflow with multiple build plates:**
+
+```gcode
+; Calibrate with PEI sheet installed
+PROBE_EDDY_NG_CALIBRATE
+PROBE_EDDY_NG_MODEL ACTION=SAVE NAME=smooth_pei
+SAVE_CONFIG
+
+; Later, swap to textured PEI and recalibrate
+PROBE_EDDY_NG_CALIBRATE
+PROBE_EDDY_NG_MODEL ACTION=SAVE NAME=textured_pei
+SAVE_CONFIG
+
+; Switch between plates without recalibrating
+PROBE_EDDY_NG_MODEL ACTION=LOAD NAME=smooth_pei
+; or
+PROBE_EDDY_NG_MODEL ACTION=LOAD NAME=textured_pei
+```
+
+#### PROBE_EDDY_NG_STREAM
+
+Manage data streaming sessions for diagnostic data capture:
+
+```
+PROBE_EDDY_NG_STREAM ACTION=START [FILE=/tmp/my_data.csv]
+PROBE_EDDY_NG_STREAM ACTION=STOP
+PROBE_EDDY_NG_STREAM ACTION=CANCEL
+PROBE_EDDY_NG_STREAM ACTION=STATUS
+```
+
+| Action | Description |
+|---|---|
+| `START` | Begin recording sensor data. Optional `FILE` parameter for output path. |
+| `STOP` | Stop recording and write CSV file. |
+| `CANCEL` | Stop recording and discard data. |
+| `STATUS` | Show current streaming status (sample count, duration). |
+
+CSV output columns: `time, frequency, temperature, position_x, position_y, position_z`
 
 ---
 
@@ -480,7 +741,7 @@ The best DC for homing and tap are selected independently and saved as `reg_driv
 
 1. Install eddy-ng and configure `printer.cfg`
 2. Home X and Y axes
-3. Run `PROBE_EDDY_NG_SETUP` -- interactive wizard guides you through initial positioning
+3. Run `PROBE_EDDY_NG_SETUP` -- interactive wizard guides through initial positioning
 4. Run `SAVE_CONFIG`
 5. Run `PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT` -- finds best drive current for homing and tap
 6. Run `SAVE_CONFIG`
@@ -488,6 +749,13 @@ The best DC for homing and tap are selected independently and saved as `reg_driv
 8. Run `SAVE_CONFIG`
 
 Alternatively, step 3 (`PROBE_EDDY_NG_SETUP`) already finds a working drive current. Use `OPTIMIZE_DRIVE_CURRENT` afterwards if you want the **best** one, not just the first that works.
+
+**Optional advanced calibration:**
+
+9. Run `PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1` -- measure and compensate Z backlash
+10. Run `SAVE_CONFIG`
+11. Run `PROBE_EDDY_NG_TEMPERATURE_CALIBRATE` -- calibrate temperature drift (requires scipy, takes 30-60 min)
+12. Run `SAVE_CONFIG`
 
 ### Before Every Print
 
@@ -497,44 +765,208 @@ Alternatively, step 3 (`PROBE_EDDY_NG_SETUP`) already finds a working drive curr
 4. `BED_MESH_CALIBRATE` -- Bed mesh with thermal compensation
 5. Start printing
 
+See the [Print Start Macro](#example-print-start-macro) for an automated version.
+
+---
+
+## Updating
+
+### Updating eddy-ng only
+
+```bash
+cd ~/eddy-ng
+git pull
+sudo systemctl restart klipper
+```
+
+If you used the default installation, the pip package and scaffolding may need updating:
+
+```bash
+cd ~/eddy-ng
+./install.sh   # Re-run installer to update pip package
+sudo systemctl restart klipper
+```
+
+### Updating Klipper (important!)
+
+A Klipper update (`git pull` in `~/klipper`) **overwrites `src/Makefile`**, which removes the eddy-ng firmware patch (only relevant for non-Duo sensors). Use the update script:
+
+```bash
+cd ~/eddy-ng
+./update-klipper.sh
+```
+
+The script:
+1. Updates eddy-ng (`git pull`)
+2. Updates Klipper (`git pull`) -- stashes local changes if needed
+3. Re-installs eddy-ng (re-patches `src/Makefile`, re-links files)
+4. **Asks** whether to rebuild firmware
+5. **Asks** whether to flash the rebuilt firmware
+6. **Asks** whether to restart Klipper service
+
+```
+=== Step 4: Firmware ===
+
+[WARN] Klipper was updated (a1b2c3d -> e4f5g6h).
+[WARN] Detected 3 changed files in src/ -- firmware rebuild likely needed!
+
+Rebuild MCU firmware? [y/N] y
+[OK] Firmware rebuilt successfully
+
+Flash firmware to MCU? [y/N] n
+[INFO] Run ./flash.sh later to flash.
+```
+
+Use `--yes` to skip all prompts:
+
+```bash
+./update-klipper.sh --yes    # Non-interactive: update + rebuild + flash + restart
+```
+
+**Eddy Duo users:** Klipper updates do not affect the Duo firmware. You only need to re-flash the Duo if the eddy-ng firmware module changes (which is rare and will be noted in release notes).
+
+---
+
+## Uninstallation
+
+### Interactive Uninstallation
+
+```bash
+cd ~/eddy-ng
+./install.sh --uninstall
+```
+
+### Using the uninstall script
+
+```bash
+cd ~/eddy-ng
+./uninstall.sh
+```
+
+With a custom Klipper path:
+
+```bash
+./uninstall.sh /path/to/klipper
+```
+
+### Manual uninstallation via install.py
+
+```bash
+cd ~/eddy-ng
+python3 install.py --uninstall
+```
+
+### What the uninstaller removes
+
+| Component | Location |
+|---|---|
+| Python package | pip uninstall from Klipper virtualenv |
+| Scaffolding files | `klippy/extras/probe_eddy_ng.py`, `klippy/extras/ldc1612_ng.py` |
+| Plugin package | `klippy/extras/probe_eddy_ng/` (or `klippy/plugins/` for Kalico) |
+| Sensor driver | `klippy/extras/ldc1612_ng.py` |
+| Firmware module | `src/sensor_ldc1612_ng.c` |
+| Makefile patch | Reverted in `src/Makefile` |
+| Legacy files | `probe_eddy_ng.py` (old single-file install) |
+| Legacy patches | `bed_mesh.py` patches from older versions |
+
+After uninstalling, remove the `[probe_eddy_ng ...]` section from your `printer.cfg` and restart Klipper.
+
+**Note:** Calibration data stored in `printer.cfg` (under `#*# [probe_eddy_ng ...]`) is not removed automatically. Delete it manually if desired.
+
 ---
 
 ## Project Structure
 
 ```
 eddy-ng/
-├── probe_eddy_ng/           # Python package (Klipper plugin)
-│   ├── __init__.py          #   Package entry point & exports
-│   ├── _compat.py           #   Klipper/Kalico compatibility layer
-│   ├── probe.py             #   Main ProbeEddy class & GCode commands
-│   ├── params.py            #   Configuration parameters & validation
-│   ├── frequency_map.py     #   Calibration data (JSON serialization)
-│   ├── sampler.py           #   Sensor sample collection
-│   ├── endstop.py           #   Virtual endstop for Z homing
-│   ├── scanning.py          #   Rapid bed mesh scanning
-│   └── bed_mesh_helper.py   #   Bed mesh integration
-├── ldc1612_ng.py            # LDC1612 sensor driver
-├── eddy-ng/                 # MCU firmware module (C)
-│   ├── sensor_ldc1612_ng.c  #   Sensor driver with tap detection
-│   ├── Kconfig              #   Firmware build options
-│   └── Makefile             #   Build integration
-├── tests/                   # Test suite
-│   └── test_frequency_map.py
-├── install.py               # Install/uninstall script
-├── install.sh               # Install wrapper
-├── uninstall.sh             # Uninstall wrapper
-├── flash.sh                 # Firmware build & flash automation
-├── update-klipper.sh        # Safe Klipper update with re-patching
-├── .github/workflows/       # CI pipeline
-│   └── ci.yml
-└── LICENSE                  # GPLv3
+├── probe_eddy_ng/               # Python package (Klipper plugin)
+│   ├── __init__.py              #   Package entry point & exports
+│   ├── _compat.py               #   Klipper/Kalico compatibility layer
+│   ├── probe.py                 #   Main ProbeEddy class & GCode commands
+│   ├── params.py                #   Configuration parameters & validation
+│   ├── frequency_map.py         #   Calibration data & named models
+│   ├── sampler.py               #   Sensor sample collection & filtering
+│   ├── endstop.py               #   Virtual endstop for Z homing
+│   ├── scanning.py              #   Rapid bed mesh scanning
+│   ├── bed_mesh_helper.py       #   Bed mesh integration & path planning
+│   ├── alpha_beta_filter.py     #   Alpha-beta tracking filter
+│   ├── temperature_compensation.py  # Temperature drift compensation
+│   ├── backlash.py              #   Z-axis backlash estimation
+│   ├── mesh_paths.py            #   Mesh path algorithms (snake, spiral, ...)
+│   └── streaming.py             #   Data streaming with CSV export
+├── ldc1612_ng.py                # LDC1612 sensor driver
+├── eddy-ng/                     # MCU firmware module (C)
+│   ├── sensor_ldc1612_ng.c      #   Sensor driver with tap detection
+│   ├── Kconfig                  #   Firmware build options
+│   └── Makefile                 #   Build integration
+├── src/eddy_ng/                 # pip package structure
+│   ├── __init__.py              #   Package skeleton
+│   └── scaffolding/             #   Import bridges for klippy/extras/
+├── scripts/
+│   ├── install.sh               #   Interactive installer
+│   └── flash-duo.sh             #   Eddy Duo firmware flash utility
+├── firmware/                    # Pre-built firmware images
+│   └── README.md
+├── tests/                       # Test suite
+├── install.py                   # Legacy installer
+├── install.sh                   # Install wrapper
+├── uninstall.sh                 # Uninstall wrapper
+├── flash.sh                     # Firmware build & flash automation
+├── update-klipper.sh            # Safe Klipper update with re-patching
+├── pyproject.toml               # pip/hatchling build configuration
+├── .github/workflows/
+│   ├── ci.yml                   #   CI pipeline
+│   └── build-firmware.yml       #   RP2040 firmware build pipeline
+└── LICENSE                      # GPLv3
 ```
+
+---
+
+## Troubleshooting
+
+### "x_offset and y_offset are both 0.0"
+
+You must set the physical offset between the probe coil and the nozzle. Measure carefully. If the probe is genuinely at the nozzle position (unusual), set `allow_unsafe: True`.
+
+### "Calibration required first"
+
+Run `PROBE_EDDY_NG_SETUP` or `PROBE_EDDY_NG_CALIBRATE` before using probe/tap/mesh commands.
+
+### "butter mode with custom filter parameters requires scipy"
+
+Install scipy: `~/klippy-env/bin/pip install scipy`
+
+Or use default Butterworth parameters (no scipy needed) or switch to `tap_mode: wma`.
+
+### Tap triggers too early / too late
+
+Run `PROBE_EDDY_NG_CALIBRATE_THRESHOLD` to auto-tune the threshold. Lower threshold = more sensitive (triggers earlier), higher = less sensitive.
+
+### Bed mesh has poor accuracy
+
+- Increase `mesh_runs` to 2 or 3 for multi-pass averaging
+- Try `mesh_path: alternating_snake` for cross-direction averaging
+- Run `PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1` to measure and compensate backlash
+- Calibrate temperature compensation if the bed heats significantly during scanning
+
+### Klipper won't start after installation
+
+Check the Klipper log (`/tmp/klippy.log`) for import errors. Common causes:
+- numpy not installed in Klipper virtualenv: `~/klippy-env/bin/pip install numpy`
+- Sensor driver not compiled: re-run `./flash.sh` to rebuild firmware
+
+### Eddy Duo not detected
+
+1. Check USB connection: `ls /dev/serial/by-id/`
+2. Ensure the Duo is flashed with Klipper firmware (not stock BTT firmware)
+3. Try reflashing: `./scripts/flash-duo.sh`
+4. For CAN bus: verify `canbus_uuid` and CAN bus configuration
 
 ---
 
 ## Support
 
-- **Discord:** [Sovol 3D Printers Discord](https://discord.gg/Zg45rA52G7) -- eddy-ng forum (not Sovol-specific, just where the project started)
+- **Discord:** [Sovol 3D Printers Discord](https://discord.gg/Zg45rA52G7) -- eddy-ng forum (not Sovol-specific)
 - **Issues:** [GitHub Issues](https://github.com/vvuk/eddy-ng/issues)
 - **Wiki:** [Full setup guide](https://github.com/vvuk/eddy-ng/wiki)
 

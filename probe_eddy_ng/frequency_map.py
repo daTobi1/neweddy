@@ -25,6 +25,7 @@ from ._compat import (
     configerror,
     plotly,
 )
+from .temperature_compensation import TemperatureCompensationModel
 
 if TYPE_CHECKING:
     from .probe import ProbeEddy
@@ -153,7 +154,7 @@ class ProbeEddyFrequencyMap:
         self._eddy._log_info(f"Loaded calibration for drive current {drive_current}")
         return True
 
-    def save_calibration(self):
+    def save_calibration(self, model_name: Optional[str] = None):
         if self._ftoh is None or self._htof is None:
             return
 
@@ -169,6 +170,66 @@ class ProbeEddyFrequencyMap:
         }
         calibstr = json.dumps(data, separators=(",", ":"))
         configfile.set(self._eddy._full_name, f"calibration_{self.drive_current}", calibstr)
+
+        # Also save as named model if requested
+        if model_name is not None:
+            configfile.set(self._eddy._full_name, f"model_{model_name}", calibstr)
+            # Update saved model list
+            models = self._get_saved_model_names(configfile)
+            if model_name not in models:
+                models.append(model_name)
+                configfile.set(
+                    self._eddy._full_name,
+                    "saved_models",
+                    ",".join(models),
+                )
+
+    def _get_saved_model_names(self, configfile=None) -> List[str]:
+        """Get list of saved named model names from autosave config."""
+        if configfile is None:
+            configfile = self._eddy._printer.lookup_object("configfile")
+        asfc = configfile.autosave.fileconfig
+        models_str = asfc.get(self._eddy._full_name, "saved_models", fallback="")
+        if not models_str:
+            return []
+        return [m.strip() for m in models_str.split(",") if m.strip()]
+
+    def get_model_names(self) -> List[str]:
+        """Return list of all saved model names."""
+        return self._get_saved_model_names()
+
+    def load_named_model(self, model_name: str) -> bool:
+        """Load a named calibration model."""
+        configfile = self._eddy._printer.lookup_object("configfile")
+        asfc = configfile.autosave.fileconfig
+        calibstr = asfc.get(self._eddy._full_name, f"model_{model_name}", fallback=None)
+        if calibstr is None:
+            return False
+        calibstr = calibstr.strip()
+        if not calibstr.startswith("{"):
+            return False
+        try:
+            data = json.loads(calibstr)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        dc = data.get("dc", self.drive_current)
+        return self._load_from_json(calibstr, dc)
+
+    def delete_named_model(self, model_name: str) -> bool:
+        """Delete a named calibration model."""
+        configfile = self._eddy._printer.lookup_object("configfile")
+        models = self._get_saved_model_names(configfile)
+        if model_name not in models:
+            return False
+        models.remove(model_name)
+        configfile.set(
+            self._eddy._full_name,
+            "saved_models",
+            ",".join(models) if models else "",
+        )
+        # Clear the model data by setting to empty
+        configfile.set(self._eddy._full_name, f"model_{model_name}", "")
+        return True
 
     def calibrate_from_values(
         self,
@@ -396,17 +457,44 @@ class ProbeEddyFrequencyMap:
         )
         fig.write_html("/tmp/eddy-calibration.html")
 
-    def freq_to_height(self, freq: float) -> float:
+    def get_reference_frequency(self) -> float:
+        """Return the frequency corresponding to height=0 (bed surface).
+
+        Used as reference point for temperature compensation calibration.
+        """
+        if self._htof is None:
+            raise self._eddy._printer.command_error(
+                "Calling get_reference_frequency on uncalibrated map"
+            )
+        return self.height_to_freq(0.0)
+
+    def freq_to_height(
+        self,
+        freq: float,
+        temp_comp: Optional[TemperatureCompensationModel] = None,
+        current_temp: float = 0.0,
+        ref_temp: float = 0.0,
+    ) -> float:
         if self._ftoh is None:
             raise self._eddy._printer.command_error("Calling freq_to_height on uncalibrated map")
+        if temp_comp is not None and current_temp > 0.0 and ref_temp > 0.0:
+            freq = temp_comp.compensate(freq, current_temp, ref_temp)
         invfreq = 1.0 / freq
         if self._ftoh_high is not None and invfreq < self._ftoh.domain[0]:
             return float(self._ftoh_high(invfreq))
         return float(self._ftoh(invfreq))
 
-    def freqs_to_heights_np(self, freqs: np.array) -> np.array:
+    def freqs_to_heights_np(
+        self,
+        freqs: np.array,
+        temp_comp: Optional[TemperatureCompensationModel] = None,
+        current_temp: float = 0.0,
+        ref_temp: float = 0.0,
+    ) -> np.array:
         if self._ftoh is None:
             raise self._eddy._printer.command_error("Calling freqs_to_heights on uncalibrated map")
+        if temp_comp is not None and current_temp > 0.0 and ref_temp > 0.0:
+            freqs = np.array([temp_comp.compensate(f, current_temp, ref_temp) for f in freqs])
         invfreqs = 1.0 / freqs
         if self._ftoh_high is not None:
             heights = np.zeros(len(invfreqs))

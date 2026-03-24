@@ -109,7 +109,7 @@ def install_kalico(target_dir: str, uninstall: bool, copy: bool):
     print("(There's no need to run install again after eddy-ng updates.)")
 
 
-def install_klipper(target_dir: str, uninstall: bool, copy: bool):
+def install_klipper(target_dir: str, uninstall: bool, copy: bool, firmware_only: bool = False):
     if uninstall:
         print("Uninstalling files...")
         uninstall_klipper(target_dir)
@@ -122,8 +122,16 @@ def install_klipper(target_dir: str, uninstall: bool, copy: bool):
             print(f"Removing legacy file {dest_file}")
             os.remove(dest_file)
 
-    print("Installing files...")
-    for src_name, (dest_dir, kind) in FILES_TO_INSTALL.items():
+    # Determine which files to install
+    if firmware_only:
+        # Only install firmware C file and patch Makefile (Python handled by pip)
+        files = {k: v for k, v in FILES_TO_INSTALL.items() if v[0] == "src"}
+        print("Installing firmware files only (Python handled by pip)...")
+    else:
+        files = FILES_TO_INSTALL
+        print("Installing files...")
+
+    for src_name, (dest_dir, kind) in files.items():
         src_path = os.path.join(get_script_dir(), src_name)
         dest_path = os.path.join(target_dir, dest_dir)
         dest_file = os.path.join(dest_path, os.path.basename(src_name))
@@ -160,12 +168,14 @@ def main():
     parser = argparse.ArgumentParser(description="Install or uninstall components.")
     parser.add_argument("-u", "--uninstall", action="store_true", help="Uninstall files")
     parser.add_argument("--copy", action="store_true", help="Copy files instead of linking")
+    parser.add_argument("--firmware-only", action="store_true", help="Only install firmware C files and patch Makefile (skip Python)")
     parser.add_argument("target_dir", nargs="?", help="Target directory")
 
     args = parser.parse_args()
 
     uninstall = args.uninstall
     copy = args.copy
+    firmware_only = args.firmware_only
     target_dir = args.target_dir
 
     # If no target directory provided, try defaults
@@ -187,7 +197,7 @@ def main():
     if os.path.exists(os.path.join(target_dir, "klippy/extras/danger_options.py")):
         install_kalico(target_dir, uninstall, copy)
     else:
-        install_klipper(target_dir, uninstall, copy)
+        install_klipper(target_dir, uninstall, copy, firmware_only)
 
 
 if __name__ == "__main__":

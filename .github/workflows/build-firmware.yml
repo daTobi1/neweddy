@@ -1,0 +1,152 @@
+name: Build Eddy Duo Firmware
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  KLIPPER_REPO: https://github.com/Klipper3d/klipper.git
+
+  # BTT Eddy Duo RP2040 CAN GPIO pins
+  CAN_TX_GPIO: 1
+  CAN_RX_GPIO: 0
+
+jobs:
+  build-duo-firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant:
+          # ── USB ────────────────────────────────────────────────
+          - name: eddy-duo-usb
+            description: "Eddy Duo USB (no bootloader)"
+            flash_offset: "0x10000100"
+            extra_config: |
+              CONFIG_USB=y
+              CONFIG_USB_VENDOR_ID=0x1d50
+              CONFIG_USB_DEVICE_ID=0x614e
+              CONFIG_USB_SERIAL_NUMBER_CHIPID=y
+
+          # ── CAN bus 500k (no bootloader) ──────────────────────
+          - name: eddy-duo-canbus-500k
+            description: "Eddy Duo CAN 500k (no bootloader)"
+            flash_offset: "0x10000100"
+            extra_config: |
+              CONFIG_CANSERIAL=y
+              CONFIG_CANBUS_FREQUENCY=500000
+              CONFIG_RP2040_CANBUS_GPIO_RX=0
+              CONFIG_RP2040_CANBUS_GPIO_TX=1
+
+          # ── CAN bus 1M (no bootloader) ────────────────────────
+          - name: eddy-duo-canbus-1m
+            description: "Eddy Duo CAN 1M (no bootloader)"
+            flash_offset: "0x10000100"
+            extra_config: |
+              CONFIG_CANSERIAL=y
+              CONFIG_CANBUS_FREQUENCY=1000000
+              CONFIG_RP2040_CANBUS_GPIO_RX=0
+              CONFIG_RP2040_CANBUS_GPIO_TX=1
+
+          # ── CAN bus 500k + Katapult bootloader ────────────────
+          - name: eddy-duo-katapult-canbus-500k
+            description: "Eddy Duo CAN 500k (Katapult bootloader)"
+            flash_offset: "0x10004000"
+            extra_config: |
+              CONFIG_CANSERIAL=y
+              CONFIG_CANBUS_FREQUENCY=500000
+              CONFIG_RP2040_CANBUS_GPIO_RX=0
+              CONFIG_RP2040_CANBUS_GPIO_TX=1
+
+          # ── CAN bus 1M + Katapult bootloader ──────────────────
+          - name: eddy-duo-katapult-canbus-1m
+            description: "Eddy Duo CAN 1M (Katapult bootloader)"
+            flash_offset: "0x10004000"
+            extra_config: |
+              CONFIG_CANSERIAL=y
+              CONFIG_CANBUS_FREQUENCY=1000000
+              CONFIG_RP2040_CANBUS_GPIO_RX=0
+              CONFIG_RP2040_CANBUS_GPIO_TX=1
+
+    steps:
+      - name: Checkout eddy-ng
+        uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi
+
+      - name: Clone Klipper
+        run: git clone --depth 1 ${{ env.KLIPPER_REPO }} /tmp/klipper
+
+      - name: Install eddy-ng firmware module
+        run: |
+          # Copy C file into Klipper src
+          cp eddy-ng/sensor_ldc1612_ng.c /tmp/klipper/src/
+          # Patch Makefile
+          sed -i 's,sensor_ldc1612.c$,sensor_ldc1612.c sensor_ldc1612_ng.c,' /tmp/klipper/src/Makefile
+
+      - name: Write firmware config
+        run: |
+          cat > /tmp/klipper/.config << EOF
+          CONFIG_LOW_LEVEL_OPTIONS=y
+          CONFIG_MACH_RP2040=y
+          CONFIG_BOARD_DIRECTORY="rp2040"
+          CONFIG_MCU="rp2040"
+          CONFIG_CLOCK_FREQ=12000000
+          CONFIG_FLASH_SIZE=0x200000
+          CONFIG_RAM_START=0x20000000
+          CONFIG_RAM_SIZE=0x42000
+          CONFIG_STACK_SIZE=512
+          CONFIG_FLASH_APPLICATION_ADDRESS=${{ matrix.variant.flash_offset }}
+          CONFIG_RP2040_HAVE_STAGE2=y
+          CONFIG_WANT_LDC1612=y
+          CONFIG_WANT_SENSOR_BULK=y
+          CONFIG_WANT_SOFTWARE_I2C=y
+          ${{ matrix.variant.extra_config }}
+          EOF
+
+      - name: Configure and build
+        run: |
+          cd /tmp/klipper
+          make olddefconfig
+          make -j$(nproc)
+
+      - name: Collect firmware artifacts
+        run: |
+          mkdir -p firmware-out
+          if [ -f /tmp/klipper/out/klipper.uf2 ]; then
+            cp /tmp/klipper/out/klipper.uf2 "firmware-out/${{ matrix.variant.name }}.uf2"
+          fi
+          if [ -f /tmp/klipper/out/klipper.bin ]; then
+            cp /tmp/klipper/out/klipper.bin "firmware-out/${{ matrix.variant.name }}.bin"
+          fi
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.variant.name }}
+          path: firmware-out/
+
+  release-firmware:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-duo-firmware
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: firmware/
+          merge-multiple: true
+
+      - name: List firmware files
+        run: ls -la firmware/
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: firmware/*
+          fail_on_unmatched_files: false

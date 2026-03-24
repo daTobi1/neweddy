@@ -16,8 +16,9 @@ try:
 
     IS_KALICO = True
 except ImportError:
-    from . import bus, bulk_sensor
-    from klippy import Printer
+    import bus  # type: ignore[import-not-found]
+    import bulk_sensor  # type: ignore[import-not-found]
+    from klippy import Printer  # type: ignore[import-not-found]
 
     IS_KALICO = False
 

@@ -41,6 +41,14 @@ from .sampler import ProbeEddySampler
 from .endstop import ProbeEddyEndstopWrapper
 from .scanning import ProbeEddyScanningProbe
 from .bed_mesh_helper import BedMeshScanHelper, bed_mesh_ProbeManager_start_probe_override
+from .alpha_beta_filter import AlphaBetaFilter
+from .temperature_compensation import (
+    TemperatureCompensationModel, TempCompCoefficients,
+    fit_temperature_model, load_temp_comp_from_config,
+    save_temp_comp_to_config,
+)
+from .backlash import estimate_backlash, BacklashResult
+from .streaming import DataStreamer, StreamSample
 
 
 @final
@@ -150,6 +158,22 @@ class ProbeEddy:
 
         # runtime configurable
         self._tap_adjust_z = self.params.tap_adjust_z
+
+        # Temperature compensation
+        self._temp_comp: Optional[TemperatureCompensationModel] = None
+        tc = load_temp_comp_from_config(config)
+        if tc is not None:
+            self._temp_comp = TemperatureCompensationModel(tc)
+            logging.info("EDDYng: Temperature compensation loaded")
+
+        # Alpha-beta filter for measurement smoothing
+        self._ab_filter = AlphaBetaFilter(
+            alpha=self.params.filter_alpha,
+            beta=self.params.filter_beta,
+        )
+
+        # Data streamer
+        self._streamer = DataStreamer()
 
         # define our own commands
         self._dummy_gcode_cmd: GCodeCommand = self._gcode.create_gcode_command("", "", {})
@@ -272,6 +296,28 @@ class ProbeEddy:
         gcode.register_command("EDDYNG_BED_MESH_EXPERIMENTAL", self.cmd_MESH, "")
         gcode.register_command("EDDYNG_START_STREAM_EXPERIMENTAL", self.cmd_START_STREAM, "")
         gcode.register_command("EDDYNG_STOP_STREAM_EXPERIMENTAL", self.cmd_STOP_STREAM, "")
+
+        # New features
+        gcode.register_command(
+            "PROBE_EDDY_NG_TEMPERATURE_CALIBRATE",
+            self.cmd_TEMPERATURE_CALIBRATE,
+            "Calibrate temperature compensation model",
+        )
+        gcode.register_command(
+            "PROBE_EDDY_NG_ESTIMATE_BACKLASH",
+            self.cmd_ESTIMATE_BACKLASH,
+            "Estimate Z-axis backlash using statistical analysis",
+        )
+        gcode.register_command(
+            "PROBE_EDDY_NG_STREAM",
+            self.cmd_STREAM,
+            "Manage data streaming (ACTION=START|STOP|CANCEL|STATUS)",
+        )
+        gcode.register_command(
+            "PROBE_EDDY_NG_MODEL",
+            self.cmd_MODEL,
+            "Manage named calibration models (ACTION=SAVE|LOAD|LIST|DELETE)",
+        )
 
     def _handle_command_error(self, gcmd=None):
         try:
@@ -2380,3 +2426,320 @@ class ProbeEddy:
         self._log_info("Eddy sampling finished")
         self._sampler.finish()
         self._sampler = None
+
+    # ─── New Features ────────────────────────────────────────────────────
+
+    def cmd_STREAM(self, gcmd: GCodeCommand):
+        """Manage data streaming sessions with CSV export."""
+        action = gcmd.get("ACTION", "STATUS").lower()
+
+        if action == "start":
+            file_path = gcmd.get("FILE", None)
+            self._streamer.start_session(file_path)
+            self.start_sampler()
+            self._log_msg(self._streamer.get_status())
+        elif action == "stop":
+            output = self._streamer.stop_session()
+            if self._sampler:
+                self._sampler.finish()
+                self._sampler = None
+            if output:
+                self._log_msg(f"Stream saved to {output}")
+            else:
+                self._log_msg("No stream was active")
+        elif action == "cancel":
+            self._streamer.cancel_session()
+            if self._sampler:
+                self._sampler.finish()
+                self._sampler = None
+            self._log_msg("Stream cancelled")
+        elif action == "status":
+            self._log_msg(self._streamer.get_status())
+        else:
+            raise self._printer.command_error(
+                f"Unknown ACTION '{action}'. Use START, STOP, CANCEL, or STATUS"
+            )
+
+    def cmd_ESTIMATE_BACKLASH(self, gcmd: GCodeCommand):
+        """Estimate Z-axis backlash using Welch's t-test."""
+        iterations = gcmd.get_int("ITERATIONS", 10, minval=3)
+        delta = gcmd.get_float("DELTA", 0.5, minval=0.2, maxval=1.0)
+        speed = gcmd.get_float("SPEED", self.params.probe_speed, above=0.0)
+        calibrate = gcmd.get_int("CALIBRATE", 0)
+
+        # Need calibration
+        fmap = self._dc_to_fmap.get(self._reg_drive_current)
+        if fmap is None or not fmap.calibrated():
+            raise self._printer.command_error("Calibration required first")
+
+        self._log_msg(f"Estimating backlash: {iterations} iterations, "
+                      f"delta={delta:.2f} mm, speed={speed:.1f} mm/s")
+
+        toolhead = self._toolhead
+        height = self.params.home_trigger_height
+
+        # Start sampler for height measurements
+        self.start_sampler()
+        sampler = self._sampler
+
+        def measure_height():
+            toolhead.dwell(0.150)
+            toolhead.wait_moves()
+            return sampler.get_height_now()
+
+        def move_z(z, spd):
+            toolhead.manual_move([None, None, z], spd)
+
+        def wait():
+            toolhead.wait_moves()
+
+        try:
+            result = estimate_backlash(
+                measure_height_func=measure_height,
+                move_func=move_z,
+                wait_func=wait,
+                height=height,
+                delta=delta,
+                iterations=iterations,
+                speed=speed,
+            )
+        finally:
+            sampler.finish()
+            self._sampler = None
+
+        self._log_msg(
+            f"Backlash estimation:\n"
+            f"  Mean (approach from below): {result.mean_up:.4f} mm "
+            f"(std: {result.std_up:.4f})\n"
+            f"  Mean (approach from above): {result.mean_down:.4f} mm "
+            f"(std: {result.std_down:.4f})\n"
+            f"  t-statistic: {result.t_stat:.3f} "
+            f"(df: {result.degrees_of_freedom:.1f})\n"
+            f"  Significant: {'YES' if result.significant else 'NO'}\n"
+            f"  Backlash: {result.backlash:.4f} mm"
+        )
+
+        if calibrate and result.significant and result.backlash > 0:
+            self.params.z_backlash = result.backlash
+            configfile = self._printer.lookup_object("configfile")
+            configfile.set(self._full_name, "z_backlash",
+                           f"{result.backlash:.4f}")
+            self._log_msg(
+                f"z_backlash set to {result.backlash:.4f} mm. "
+                "Use SAVE_CONFIG to persist."
+            )
+
+    def cmd_TEMPERATURE_CALIBRATE(self, gcmd: GCodeCommand):
+        """Calibrate temperature compensation model.
+
+        Heats the bed and collects frequency-temperature data at multiple
+        heights to build a drift compensation model.
+        """
+        min_temp = gcmd.get_float("MIN_TEMP", 40.0, minval=30.0, maxval=50.0)
+        max_temp = gcmd.get_float("MAX_TEMP", 60.0, minval=50.0)
+        bed_temp = gcmd.get_float("BED_TEMP", 90.0, minval=80.0)
+        heights = [1.0, 2.0, 3.0]
+
+        if max_temp < min_temp + 15:
+            raise self._printer.command_error(
+                "MAX_TEMP must be at least MIN_TEMP + 15"
+            )
+        if bed_temp < max_temp + 20:
+            raise self._printer.command_error(
+                "BED_TEMP must be at least MAX_TEMP + 20"
+            )
+
+        fmap = self._dc_to_fmap.get(self._reg_drive_current)
+        if fmap is None or not fmap.calibrated():
+            raise self._printer.command_error("Calibration required first")
+
+        toolhead = self._toolhead
+        gcode = self._gcode
+        reactor = self._reactor
+        data_per_height: dict = {}
+
+        self._log_msg(
+            f"Temperature calibration: {min_temp:.0f}-{max_temp:.0f}C "
+            f"at bed {bed_temp:.0f}C across {len(heights)} heights"
+        )
+        self._log_msg("This will take a while. Do not touch the printer.")
+
+        for h_idx, height in enumerate(heights):
+            self._log_msg(f"\n--- Phase {h_idx + 1}/{len(heights)}: "
+                          f"height {height:.0f} mm ---")
+
+            # Cooldown phase
+            self._log_msg("Cooling down...")
+            gcode.run_script_from_command("M140 S0")     # bed off
+            gcode.run_script_from_command("M106 S255")   # fan on
+            toolhead.manual_move([None, None, height], self.params.lift_speed)
+            toolhead.wait_moves()
+
+            # Wait for cooldown
+            self._wait_for_temperature(min_temp, direction="cool")
+
+            # Heatup phase
+            self._log_msg(f"Heating bed to {bed_temp:.0f}C...")
+            gcode.run_script_from_command(f"M140 S{bed_temp:.0f}")
+            gcode.run_script_from_command("M106 S0")  # fan off
+            toolhead.manual_move([None, None, height], self.params.lift_speed)
+            toolhead.wait_moves()
+
+            # Collect samples during heatup
+            samples = []
+            self.start_sampler()
+            sampler = self._sampler
+
+            try:
+                self._wait_for_temperature(min_temp - 1, direction="heat")
+
+                self._log_msg(f"Collecting data {min_temp:.0f}-{max_temp:.0f}C...")
+                last_log = time.time()
+
+                while True:
+                    reactor.pause(reactor.monotonic() + 1.0)
+                    # Read current sensor value
+                    freq = sampler.get_last_freq()
+                    temp = self._get_coil_temperature()
+
+                    if freq is not None and temp is not None:
+                        samples.append((freq, temp))
+
+                    if temp is not None and temp >= max_temp:
+                        break
+
+                    if time.time() - last_log > 30.0:
+                        self._log_msg(f"  Temp: {temp:.1f}C, "
+                                      f"{len(samples)} samples")
+                        last_log = time.time()
+            finally:
+                sampler.finish()
+                self._sampler = None
+
+            self._log_msg(f"  Collected {len(samples)} samples at "
+                          f"height {height:.0f} mm")
+            data_per_height[height] = samples
+
+        # Turn off bed
+        gcode.run_script_from_command("M140 S0")
+
+        # Fit model
+        self._log_msg("Fitting temperature compensation model...")
+        ref_freq = fmap.get_reference_frequency()
+        ref_temp = self._get_coil_temperature() or 25.0
+
+        coeff = fit_temperature_model(data_per_height, ref_freq, ref_temp)
+        if coeff is None:
+            raise self._printer.command_error(
+                "Temperature model fitting failed. "
+                "Check logs for details."
+            )
+
+        # Save
+        self._temp_comp = TemperatureCompensationModel(coeff)
+        configfile = self._printer.lookup_object("configfile")
+        save_temp_comp_to_config(configfile, self._full_name, coeff)
+        self._log_msg(
+            "Temperature compensation model saved.\n"
+            "Use SAVE_CONFIG to persist."
+        )
+
+    def _wait_for_temperature(self, target: float, direction: str = "heat",
+                              timeout: float = 600.0):
+        """Wait for coil temperature to reach target."""
+        reactor = self._reactor
+        start = time.time()
+        while True:
+            reactor.pause(reactor.monotonic() + 1.0)
+            temp = self._get_coil_temperature()
+            if temp is None:
+                continue
+
+            if direction == "heat" and temp >= target:
+                return
+            if direction == "cool" and temp <= target:
+                return
+
+            if time.time() - start > timeout:
+                raise self._printer.command_error(
+                    f"Temperature timeout: wanted {target:.0f}C "
+                    f"({direction}), currently {temp:.1f}C"
+                )
+
+    def _get_coil_temperature(self) -> Optional[float]:
+        """Get current coil/bed temperature if available."""
+        try:
+            heater = self._printer.lookup_object("heater_bed", None)
+            if heater is not None:
+                return heater.get_temp(self._reactor.monotonic())[0]
+        except Exception:
+            pass
+        return None
+
+    def cmd_MODEL(self, gcmd: GCodeCommand):
+        """Manage named calibration models.
+
+        ACTION=SAVE NAME=<name>  - Save current calibration as named model
+        ACTION=LOAD NAME=<name>  - Load a named model as active calibration
+        ACTION=LIST              - List all saved model names
+        ACTION=DELETE NAME=<name> - Delete a named model
+        """
+        action = gcmd.get("ACTION", "LIST").upper()
+        name = gcmd.get("NAME", "")
+
+        fmap = self._dc_to_fmap.get(self._reg_drive_current)
+
+        if action == "LIST":
+            if fmap is None:
+                self._log_msg("No calibration loaded, no models available")
+                return
+            models = fmap.get_model_names()
+            if not models:
+                self._log_msg("No saved models")
+            else:
+                self._log_msg(f"Saved models: {', '.join(models)}")
+            return
+
+        if not name:
+            raise self._printer.command_error(
+                "NAME parameter required for SAVE/LOAD/DELETE"
+            )
+
+        if action == "SAVE":
+            if fmap is None or not fmap.calibrated():
+                raise self._printer.command_error(
+                    "No active calibration to save"
+                )
+            fmap.save_calibration(model_name=name)
+            self._log_msg(
+                f"Saved current calibration as model '{name}'. "
+                "Use SAVE_CONFIG to persist."
+            )
+
+        elif action == "LOAD":
+            if fmap is None:
+                fmap = ProbeEddyFrequencyMap(self)
+            if not fmap.load_named_model(name):
+                raise self._printer.command_error(
+                    f"Model '{name}' not found"
+                )
+            self._dc_to_fmap[fmap.drive_current] = fmap
+            self._log_msg(f"Loaded model '{name}'")
+
+        elif action == "DELETE":
+            if fmap is None:
+                raise self._printer.command_error("No calibration loaded")
+            if not fmap.delete_named_model(name):
+                raise self._printer.command_error(
+                    f"Model '{name}' not found"
+                )
+            self._log_msg(
+                f"Deleted model '{name}'. "
+                "Use SAVE_CONFIG to persist."
+            )
+
+        else:
+            raise self._printer.command_error(
+                f"Unknown ACTION '{action}'. "
+                "Use SAVE, LOAD, LIST, or DELETE."
+            )

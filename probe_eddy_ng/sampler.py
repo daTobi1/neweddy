@@ -18,9 +18,12 @@ from typing import (
 )
 
 from ._compat import Printer
+from .alpha_beta_filter import AlphaBetaFilter
+from .streaming import DataStreamer, StreamSample
 
 if TYPE_CHECKING:
     from .probe import ProbeEddy
+    from .temperature_compensation import TemperatureCompensationModel
 
 
 @final
@@ -39,6 +42,13 @@ class ProbeEddySampler:
         self._started = False
         self._errors = 0
         self._fmap = eddy.map_for_drive_current() if calculate_heights else None
+
+        # Alpha-beta filter (uses eddy's configured instance)
+        self._ab_filter: Optional[AlphaBetaFilter] = eddy._ab_filter
+        # Data streamer reference
+        self._streamer: DataStreamer = eddy._streamer
+        # Temperature compensation reference
+        self._temp_comp = eddy._temp_comp
 
         self.times: List[float] = []
         self.raw_freqs: List[float] = []
@@ -76,8 +86,49 @@ class ProbeEddySampler:
         self.freqs.extend(freqs_np.tolist())
 
         if self._fmap is not None:
-            heights_np = self._fmap.freqs_to_heights_np(freqs_np)
-            self.heights.extend(heights_np.tolist())
+            heights_np = self._fmap.freqs_to_heights_np(
+                freqs_np,
+                temp_comp=self._temp_comp,
+                current_temp=self._get_current_temp(),
+                ref_temp=self._get_ref_temp(),
+            )
+
+            # Apply alpha-beta filter if configured
+            if self._ab_filter is not None and self._ab_filter.alpha > 0:
+                filtered = []
+                for i, h in enumerate(heights_np):
+                    t = self.times[start_idx + i] if start_idx + i < len(self.times) else 0.0
+                    filtered.append(self._ab_filter.update(float(h), t))
+                self.heights.extend(filtered)
+            else:
+                self.heights.extend(heights_np.tolist())
+
+            # Feed active streaming session
+            if self._streamer.is_active:
+                for i in range(len(freqs_np)):
+                    idx = start_idx + i
+                    t = self.times[idx] if idx < len(self.times) else 0.0
+                    h = self.heights[idx] if idx < len(self.heights) else 0.0
+                    self._streamer.add_sample(StreamSample(
+                        time=t,
+                        frequency=float(freqs_np[i]),
+                        temperature=self._get_current_temp(),
+                    ))
+
+    def _get_current_temp(self) -> float:
+        """Get current coil/sensor temperature if available."""
+        if self._temp_comp is None:
+            return 0.0
+        try:
+            return self.eddy._get_coil_temperature()
+        except Exception:
+            return 0.0
+
+    def _get_ref_temp(self) -> float:
+        """Get reference temperature from temp comp model."""
+        if self._temp_comp is None:
+            return 0.0
+        return self._temp_comp.coefficients.ref_temperature
 
     def __enter__(self):
         self.start()

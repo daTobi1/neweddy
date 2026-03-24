@@ -47,6 +47,18 @@ class ProbeEddyParams:
     max_errors: int = 0
     debug: bool = True
     tap_trigger_safe_start_height: float = 1.5
+    # Mesh path settings
+    mesh_path: str = "snake"
+    mesh_direction: str = "x"
+    mesh_runs: int = 1
+    mesh_height: float = 3.0
+    # Backlash compensation
+    z_backlash: float = 0.0
+    # Alpha-beta filter
+    filter_alpha: float = 0.5
+    filter_beta: float = 1e-6
+    # Temperature compensation (loaded from saved config)
+    temperature_compensation: str = ""
     _warning_msgs: List[str] = field(default_factory=list)
 
     @staticmethod
@@ -124,6 +136,24 @@ class ProbeEddyParams:
 
         self.x_offset = config.getfloat("x_offset", self.x_offset)
         self.y_offset = config.getfloat("y_offset", self.y_offset)
+
+        # Mesh path settings
+        mesh_path_choices = ["snake", "alternating_snake", "spiral", "random"]
+        self.mesh_path = config.getchoice("mesh_path", mesh_path_choices, self.mesh_path)
+        mesh_dir_choices = ["x", "y"]
+        self.mesh_direction = config.getchoice("mesh_direction", mesh_dir_choices, self.mesh_direction)
+        self.mesh_runs = config.getint("mesh_runs", self.mesh_runs, minval=1)
+        self.mesh_height = config.getfloat("mesh_height", self.mesh_height, above=0.0)
+
+        # Backlash
+        self.z_backlash = config.getfloat("z_backlash", self.z_backlash, minval=0.0)
+
+        # Alpha-beta filter
+        self.filter_alpha = config.getfloat("filter_alpha", self.filter_alpha, minval=0.0, maxval=1.0)
+        self.filter_beta = config.getfloat("filter_beta", self.filter_beta, minval=0.0, maxval=1.0)
+
+        # Temperature compensation
+        self.temperature_compensation = config.get("temperature_compensation", "")
 
         self.validate(config)
 

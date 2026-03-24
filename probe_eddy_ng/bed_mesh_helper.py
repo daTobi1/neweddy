@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 import numpy as np
 from functools import cmp_to_key
-from typing import TYPE_CHECKING, final
+from typing import List, TYPE_CHECKING, final
 
 from ._compat import bed_mesh, ConfigWrapper
+from .mesh_paths import generate_mesh_path
 
 if TYPE_CHECKING:
     from .probe import ProbeEddy
@@ -22,23 +24,52 @@ class BedMeshScanHelper:
         self._x_min, self._y_min = bmc.getfloatlist("mesh_min", count=2, note_valid=False)
         self._x_max, self._y_max = bmc.getfloatlist("mesh_max", count=2, note_valid=False)
         self._speed = bmc.getfloat("speed", 100.0, above=0.0, note_valid=False)
-        self._scan_z = bmc.getfloat("horizontal_move_z", self._eddy.params.home_trigger_height, above=0.0, note_valid=False)
+        self._scan_z = bmc.getfloat("horizontal_move_z", self._eddy.params.mesh_height, above=0.0, note_valid=False)
 
         self._x_offset = self._eddy.params.x_offset
         self._y_offset = self._eddy.params.y_offset
+
+        # Get axis limits for path generation
+        th_config = config.getsection("stepper_x")
+        try:
+            self._axis_min = (
+                th_config.getfloat("position_min", 0.0, note_valid=False),
+                config.getsection("stepper_y").getfloat("position_min", 0.0, note_valid=False),
+            )
+            self._axis_max = (
+                th_config.getfloat("position_max", 300.0, note_valid=False),
+                config.getsection("stepper_y").getfloat("position_max", 300.0, note_valid=False),
+            )
+        except Exception:
+            self._axis_min = (0.0, 0.0)
+            self._axis_max = (300.0, 300.0)
 
         self._mesh_points, self._mesh_path = self._generate_path()
 
     def _generate_path(self):
         x_vals = np.linspace(self._x_min, self._x_max, self._x_points)
         y_vals = np.linspace(self._y_min, self._y_max, self._y_points)
-        path = []
-        reverse = False
 
+        # Generate the grid of probe points
+        probe_points = []
         for y in y_vals:
-            row = [(x, y, True) for x in (reversed(x_vals) if reverse else x_vals)]
-            path.extend(row)
-            reverse = not reverse
+            for x in x_vals:
+                probe_points.append((float(x), float(y)))
+
+        # Use configured path algorithm
+        path_type = self._eddy.params.mesh_path
+        direction = self._eddy.params.mesh_direction
+
+        ordered = generate_mesh_path(
+            probe_points,
+            path_type=path_type,
+            direction=direction,
+            axis_min=self._axis_min,
+            axis_max=self._axis_max,
+        )
+
+        # Convert to (x, y, include) format for compatibility
+        path = [(x, y, True) for x, y in ordered]
         return path, path
 
     def _scan_path(self):
@@ -105,40 +136,108 @@ class BedMeshScanHelper:
         self._bed_mesh.set_mesh(mesh)
         self._eddy._log_msg("Mesh scan complete")
 
+    def _apply_axis_twist_compensation(self, heights: List[float]) -> List[float]:
+        """Apply axis twist compensation corrections to scan heights.
+
+        Looks up Klipper's axis_twist_compensation module and uses it
+        to correct probe readings based on X position along the gantry.
+        """
+        atc = self._printer.lookup_object("axis_twist_compensation", None)
+        if atc is None:
+            return heights
+
+        try:
+            compensations = atc.get_z_compensation_value
+        except AttributeError:
+            logging.info("axis_twist_compensation found but "
+                         "get_z_compensation_value not available")
+            return heights
+
+        corrected = []
+        for i, (x, y, include) in enumerate(self._mesh_path):
+            if not include or i >= len(heights):
+                continue
+            try:
+                z_comp = compensations(x)
+                corrected.append(heights[i] - z_comp)
+            except Exception:
+                corrected.append(heights[i])
+
+        if len(corrected) != len(heights):
+            logging.warning("axis_twist_compensation: point count mismatch, "
+                            "skipping compensation")
+            return heights
+
+        logging.info(f"Applied axis twist compensation to {len(corrected)} points")
+        return corrected
+
+    def _run_single_scan(self) -> List[float]:
+        """Execute a single scan pass and return heights."""
+        th = self._eddy._toolhead
+        sample_time = self._eddy.params.scan_sample_time
+
+        # Reset alpha-beta filter for each pass
+        if self._eddy._ab_filter is not None:
+            self._eddy._ab_filter.reset()
+
+        with self._eddy.start_sampler() as sampler:
+            path_times = self._scan_path()
+            sampler.wait_for_sample_at_time(path_times[-1] + sample_time * 2.0)
+            sampler.finish()
+
+            heights = sampler.find_heights_at_times(
+                [(t - sample_time / 2.0, t + sample_time / 2.0) for t in path_times]
+            )
+            heights = [h + self._eddy._tap_offset for h in heights]
+            return heights, path_times
+
     def scan(self):
         th = self._eddy._toolhead
+        mesh_runs = self._eddy.params.mesh_runs
 
-        # move to the start point
+        # Move to the start point
         v = self._mesh_path[0]
         th.manual_move([None, None, 10.0], self._eddy.params.lift_speed)
         th.manual_move([v[0] - self._x_offset, v[1] - self._y_offset, None], self._speed)
         th.manual_move([None, None, self._scan_z], self._eddy.params.probe_speed)
         th.wait_moves()
 
-        heights = []
+        all_heights = []
 
-        sample_time = self._eddy.params.scan_sample_time
+        for run in range(mesh_runs):
+            if run > 0:
+                # Return to start for subsequent passes
+                v = self._mesh_path[0]
+                th.manual_move([v[0] - self._x_offset, v[1] - self._y_offset, None], self._speed)
+                th.wait_moves()
+                self._eddy._log_msg(f"Starting mesh pass {run + 1}/{mesh_runs}")
 
-        with self._eddy.start_sampler() as sampler:
-            path_times = self._scan_path()
-            sampler.wait_for_sample_at_time(path_times[-1] + sample_time*2.)
-            sampler.finish()
+            heights, path_times = self._run_single_scan()
+            all_heights.append(heights)
 
-            heights = sampler.find_heights_at_times([(t - sample_time/2., t + sample_time/2.) for t in path_times])
-            # Note plus tap_offset here, vs -tap_offset when probing. These are actual
-            # heights, the other is "offset from real"
-            heights = [h + self._eddy._tap_offset for h in heights]
+        # Average across passes
+        if mesh_runs > 1:
+            heights_np = np.array(all_heights)
+            heights = np.median(heights_np, axis=0).tolist()
+            self._eddy._log_msg(
+                f"Averaged {mesh_runs} mesh passes (median)"
+            )
+        else:
+            heights = all_heights[0]
 
-            with open("/tmp/mesh.csv", "w") as mfile:
-                mfile.write("time,x,y,z\n")
-                for i in range(len(self._mesh_points)):
-                    t = path_times[i]
-                    x = self._mesh_points[i][0]
-                    y = self._mesh_points[i][1]
-                    z = heights[i]
-                    mfile.write(f"{t},{x},{y},{z}\n")
+        # Apply axis twist compensation if available
+        heights = self._apply_axis_twist_compensation(heights)
 
-            self._set_bed_mesh(heights)
+        with open("/tmp/mesh.csv", "w") as mfile:
+            mfile.write("time,x,y,z\n")
+            for i in range(len(self._mesh_points)):
+                t = path_times[i]
+                x = self._mesh_points[i][0]
+                y = self._mesh_points[i][1]
+                z = heights[i]
+                mfile.write(f"{t},{x},{y},{z}\n")
+
+        self._set_bed_mesh(heights)
 
 
 def bed_mesh_ProbeManager_start_probe_override(self, gcmd):

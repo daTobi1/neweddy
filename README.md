@@ -564,16 +564,58 @@ z_backlash: 0.015
 
 ### Axis Twist Compensation
 
-eddy-ng automatically integrates with Klipper's `axis_twist_compensation` module. If configured, twist corrections are applied during bed mesh scanning:
+eddy-ng automatically integrates with Klipper's `axis_twist_compensation` module and includes a **fully automatic tap-based calibration** -- no manual probing required.
+
+#### Configuration
+
+Add to your printer.cfg:
 
 ```ini
 [axis_twist_compensation]
 calibrate_start_x: 30
 calibrate_end_x: 320
 calibrate_y: 175
+# Optional: Y-axis twist calibration
+calibrate_start_y: 30
+calibrate_end_y: 270
+calibrate_x: 175
 ```
 
-No additional eddy-ng configuration is needed -- the correction is applied automatically whenever `axis_twist_compensation` is loaded.
+#### Calibration
+
+Unlike Klipper's built-in `AXIS_TWIST_COMPENSATION_CALIBRATE` (which requires manual TESTZ/ACCEPT at every point), eddy-ng uses tap for fully automatic calibration:
+
+```
+# Calibrate X-axis twist (default)
+PROBE_EDDY_NG_AXIS_TWIST_CALIBRATE
+
+# Calibrate Y-axis twist
+PROBE_EDDY_NG_AXIS_TWIST_CALIBRATE AXIS=Y
+
+# Calibrate both axes in one run
+PROBE_EDDY_NG_AXIS_TWIST_CALIBRATE AXIS=BOTH
+
+# Custom parameters
+PROBE_EDDY_NG_AXIS_TWIST_CALIBRATE AXIS=BOTH SAMPLE_COUNT=9 SAMPLES=5
+
+SAVE_CONFIG
+```
+
+Or use the macro (homes + calibrates + saves automatically):
+```
+EDDY_NG_AXIS_TWIST_CALIBRATE AXIS=BOTH
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| AXIS | X | Which axis to calibrate: X, Y, or BOTH |
+| SAMPLE_COUNT | 7 | Number of probe points per axis |
+| SAMPLES | 3 | Tap samples per point (median) |
+| START_X/END_X | from config | X-axis range |
+| START_Y/END_Y | from config | Y-axis range |
+| X/Y | bed center | Fixed position on the other axis |
+
+Once calibrated, the correction is applied automatically during bed mesh scanning.
 
 ---
 
@@ -592,6 +634,7 @@ No additional eddy-ng configuration is needed -- the correction is applied autom
 | `PROBE_EDDY_NG_OPTIMIZE_DRIVE_CURRENT` | Test all DCs, find optimal for homing + tap |
 | `PROBE_EDDY_NG_TEMPERATURE_CALIBRATE` | Calibrate temperature compensation model |
 | `PROBE_EDDY_NG_ESTIMATE_BACKLASH` | Measure Z-axis backlash statistically |
+| `PROBE_EDDY_NG_AXIS_TWIST_CALIBRATE` | Auto-calibrate axis twist using tap (X, Y, or BOTH) |
 
 ### Probing
 
@@ -845,8 +888,9 @@ ssh user@printer "~/eddy-ng/scripts/calibrate.sh"
 
 After the basic setup:
 
-- `PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1` -- measure and compensate Z backlash, then `SAVE_CONFIG`
-- `PROBE_EDDY_NG_TEMPERATURE_CALIBRATE` -- calibrate temperature drift (requires scipy, takes 30-60 min), then `SAVE_CONFIG`
+- **Axis twist compensation:** `EDDY_NG_AXIS_TWIST_CALIBRATE AXIS=BOTH` -- fully automatic tap-based twist calibration for X and Y axes (~6 min). Requires `[axis_twist_compensation]` section in printer.cfg. Saves and restarts automatically.
+- **Z backlash:** `PROBE_EDDY_NG_ESTIMATE_BACKLASH CALIBRATE=1` -- measure and compensate Z backlash, then `SAVE_CONFIG`
+- **Temperature drift:** `PROBE_EDDY_NG_TEMPERATURE_CALIBRATE BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70` -- calibrate temperature drift compensation (requires scipy, takes 30-60 min), then `SAVE_CONFIG`
 
 ### Before Every Print
 

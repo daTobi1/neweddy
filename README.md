@@ -54,7 +54,7 @@ eddy-ng adds accurate Z-offset setting by physically making contact with the bui
 | `btt_eddy` | BigTreeTech Eddy Coil (I2C to main MCU) | Traditional (Klipper patching) |
 | `btt_eddy` | BigTreeTech Eddy Duo (own RP2040 MCU) | Patchless (pip + pre-built firmware) |
 | `ldc1612` | TI LDC1612 inductive sensor | Traditional |
-| `cartographer` | Cartographer probe | Traditional |
+| `cartographer` | Cartographer probe (own RP2040 MCU) | Patchless (pip only) |
 | `mellow_fly` | Mellow Fly probe | Traditional |
 | `ldc1612_internal_clk` | LDC1612 with internal oscillator | Traditional |
 
@@ -118,8 +118,14 @@ The installer will ask:
 
 ```
 Which Eddy sensor do you have?
-  1) BTT Eddy Duo (own RP2040 MCU, USB/CAN connection)
-  2) Other Eddy sensor (Eddy Coil, LDC1612, etc.)
+  1) Eddy Duo (RP2040-based, USB or CAN bus)
+     Patchless install: pip package + pre-built firmware
+
+  2) Cartographer (RP2040-based, USB or CAN bus)
+     Patchless install: pip package (no firmware flash needed)
+
+  3) Other (Eddy Coil, generic LDC1612, etc.)
+     Traditional install: pip package + Klipper source patching
 ```
 
 Choose your sensor type and follow the prompts.
@@ -188,6 +194,19 @@ The build script asks for connection type, CAN pins, and bootloader offset inter
 EDDY_CAN_TX_GPIO=5 EDDY_CAN_RX_GPIO=4 ./scripts/flash-duo.sh --build
 ```
 
+### Installation: Cartographer
+
+The Cartographer probe has its own RP2040 MCU. No Klipper source patching or firmware flashing is needed -- the Cartographer already runs its own Klipper firmware.
+
+**What the installer does:**
+
+| Step | Action |
+|---|---|
+| 1 | Installs eddy-ng as pip package into Klipper's virtualenv |
+| 2 | Creates scaffolding files in `klippy/extras/` (thin import bridges) |
+
+Set `sensor_type: cartographer` in your config. See [Configuration](#configuration).
+
 ### Installation: Other Eddy Sensors
 
 Sensors without their own MCU (Eddy Coil, bare LDC1612, etc.) require the custom sensor driver to be compiled into the printer's main MCU firmware.
@@ -231,6 +250,7 @@ The flash script:
 ```bash
 ./install.sh              # Interactive mode (recommended)
 ./install.sh --duo        # Skip prompt, install for Eddy Duo
+./install.sh --cartographer  # Skip prompt, install for Cartographer
 ./install.sh --other      # Skip prompt, install for other sensors
 ./install.sh --uninstall  # Uninstall everything
 ```
@@ -249,6 +269,22 @@ python3 install.py --uninstall    # Uninstall
 ---
 
 ## Configuration
+
+### Standalone Config File
+
+A ready-to-use config file is included in the repo. Copy it to your printer config directory and include it:
+
+```bash
+cp ~/eddy-ng/eddy-ng.cfg ~/printer_data/config/eddy-ng.cfg
+```
+
+In your `printer.cfg`:
+
+```ini
+[include eddy-ng.cfg]
+```
+
+Edit `eddy-ng.cfg` to match your hardware (CAN UUID, probe offsets, sensor type, bed size). The file includes MCU, probe, temperature sensors, bed mesh, QGL, and macros.
 
 ### Minimal Configuration
 
@@ -908,6 +944,7 @@ eddy-ng/
 ├── firmware/                    # Pre-built firmware images
 │   └── README.md
 ├── tests/                       # Test suite
+├── eddy-ng.cfg                  # Standalone config (copy to printer_data/config/)
 ├── install.py                   # Legacy installer
 ├── install.sh                   # Install wrapper
 ├── uninstall.sh                 # Uninstall wrapper

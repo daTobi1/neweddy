@@ -15,7 +15,10 @@ try:
     IS_KALICO = True
     HAS_PROBE_RESULT_TYPE = False
 except ImportError:
-    import os, sys
+    import os, sys, importlib
+    # Stock Klipper: modules are in klippy/ and klippy/extras/
+    # We need to import extras modules as part of the 'extras' package
+    # because they use relative imports (e.g. probe.py: from . import manual_probe)
     import mcu  # type: ignore[no-redef]
     import pins  # type: ignore[no-redef]
     import chelper  # type: ignore[no-redef]
@@ -24,29 +27,20 @@ except ImportError:
     from configfile import error as configerror  # type: ignore[no-redef]
     from gcode import GCodeCommand  # type: ignore[no-redef]
     from toolhead import ToolHead  # type: ignore[no-redef]
-    # Ensure klippy/extras/ is on sys.path so we can import sibling modules
-    # like probe, manual_probe, bed_mesh. The pip-installed package may load
-    # before Klipper adds extras/ to sys.path.
-    _klippy_dir = os.path.dirname(os.path.abspath(mcu.__file__))
-    _extras_dir = os.path.join(_klippy_dir, "extras")
-    if _extras_dir not in sys.path:
-        sys.path.insert(0, _extras_dir)
-    import importlib
-    probe = importlib.import_module("probe")
-    manual_probe = importlib.import_module("manual_probe")
-    bed_mesh = importlib.import_module("bed_mesh")
-    HomingMove = importlib.import_module("homing").HomingMove
+
+    # Import extras modules via their package path so relative imports work.
+    # Klipper's probe.py uses 'from . import manual_probe' which requires
+    # it to be loaded as 'extras.probe', not as a top-level 'probe' module.
+    probe = importlib.import_module("extras.probe")
+    manual_probe = importlib.import_module("extras.manual_probe")
+    bed_mesh = importlib.import_module("extras.bed_mesh")
+    HomingMove = importlib.import_module("extras.homing").HomingMove
 
     IS_KALICO = False
     HAS_PROBE_RESULT_TYPE = hasattr(manual_probe, "ProbeResult")
 
-# Import the sensor driver. Try pip-installed package first, then bare import
-# (for symlink installs where ldc1612_ng.py is in klippy/extras/ on sys.path).
-import importlib as _importlib
-try:
-    ldc1612_ng = _importlib.import_module("eddy_ng.ldc1612_ng")
-except ImportError:
-    ldc1612_ng = _importlib.import_module("ldc1612_ng")
+# Import the sensor driver from the repo (on sys.path via scaffolding)
+ldc1612_ng = importlib.import_module("ldc1612_ng")
 
 try:
     import plotly  # noqa

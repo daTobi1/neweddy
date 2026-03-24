@@ -54,7 +54,7 @@ MAX_TEMP=60
 HOTEND_FAN=0
 TWIST_BED_TEMP=0
 TWIST_HOTEND_TEMP=0
-USE_QGL=1
+LEVEL_CMD="QUAD_GANTRY_LEVEL"
 
 # ─── Argument parsing ─────────────────────────────────────────────────────
 
@@ -68,7 +68,8 @@ while [[ $# -gt 0 ]]; do
         --hotend-fan)    HOTEND_FAN=1; shift ;;
         --twist-bed)     TWIST_BED_TEMP="$2"; shift 2 ;;
         --twist-hotend)  TWIST_HOTEND_TEMP="$2"; shift 2 ;;
-        --no-qgl)        USE_QGL=0; shift ;;
+        --level-cmd)     LEVEL_CMD="$2"; shift 2 ;;
+        --no-level)      LEVEL_CMD=""; shift ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -83,12 +84,15 @@ while [[ $# -gt 0 ]]; do
             echo "  --hotend-fan         Use hotend fan for faster cooling in temp cal"
             echo "  --twist-bed TEMP     Bed temp for axis twist calibration (default: 0)"
             echo "  --twist-hotend TEMP  Hotend temp for axis twist (default: 0)"
-            echo "  --no-qgl             Skip QUAD_GANTRY_LEVEL"
+            echo "  --level-cmd CMD      Leveling command (default: QUAD_GANTRY_LEVEL)"
+            echo "  --no-level           Skip gantry leveling entirely"
             echo ""
             echo "Examples:"
             echo "  $0                                   # Base calibration (steps 1-4)"
             echo "  $0 --full --bed-temp 110             # Full 7-step, bed at 110C"
             echo "  $0 --full --bed-temp 110 --hotend-fan --twist-bed 60"
+            echo "  $0 --full --level-cmd Z_TILT_ADJUST   # Voron Trident"
+            echo "  $0 --full --no-level                  # Bedslingers"
             exit 0
             ;;
         *)  error "Unknown option: $1"; exit 1 ;;
@@ -230,18 +234,18 @@ home_xy_and_wait() {
     success "XY homing complete"
 }
 
-qgl_and_wait() {
-    if [ "$USE_QGL" -eq 0 ]; then
-        info "Skipping QGL (--no-qgl)"
+level_and_wait() {
+    if [ -z "$LEVEL_CMD" ]; then
+        info "Skipping gantry leveling (--no-level)"
         return 0
     fi
-    info "Running QUAD_GANTRY_LEVEL..."
-    send_gcode_nowait "QUAD_GANTRY_LEVEL"
+    info "Running $LEVEL_CMD..."
+    send_gcode_nowait "$LEVEL_CMD"
     wait_for_command "Retries:" 120 || {
         sleep 30
         wait_for_ready 30
     }
-    success "QGL complete"
+    success "$LEVEL_CMD complete"
 }
 
 # ─── Calibration steps ────────────────────────────────────────────────────
@@ -349,7 +353,7 @@ step_5_temp_calibrate() {
     info "This takes 30-60 minutes. Do not touch the printer."
 
     home_and_wait
-    qgl_and_wait
+    level_and_wait
 
     local cmd="PROBE_EDDY_NG_TEMPERATURE_CALIBRATE BED_TEMP=$BED_TEMP MIN_TEMP=$MIN_TEMP MAX_TEMP=$MAX_TEMP HOTEND_FAN=$HOTEND_FAN"
     send_gcode_nowait "$cmd"
@@ -364,7 +368,7 @@ step_6_axis_twist() {
     info "AXIS=BOTH BED_TEMP=$TWIST_BED_TEMP HOTEND_TEMP=$TWIST_HOTEND_TEMP"
 
     home_and_wait
-    qgl_and_wait
+    level_and_wait
     # Re-home Z after QGL for accurate tap
     send_gcode_nowait "G28 Z"
     sleep 5
@@ -382,7 +386,7 @@ step_7_backlash() {
     info "This is fully automatic and takes ~2 minutes."
 
     home_and_wait
-    qgl_and_wait
+    level_and_wait
     # Re-home Z after QGL
     send_gcode_nowait "G28 Z"
     sleep 5

@@ -871,6 +871,10 @@ Then run each macro in order. After each `SAVE_CONFIG` restart, Klipper tells yo
 
 ```ini
 [gcode_macro _EDDY_NG_SETTINGS]
+# Gantry leveling before advanced calibrations (Steps 5-7)
+# "QUAD_GANTRY_LEVEL" for Voron 2.4, "Z_TILT_ADJUST" for Trident, "" for none
+variable_level_command: "QUAD_GANTRY_LEVEL"
+
 # Temperature Compensation (Step 5)
 variable_bed_temp: 110          # Bed temperature
 variable_min_temp: 40           # Min sensor temp to measure

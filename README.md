@@ -866,11 +866,25 @@ Then run each macro in order. After each `SAVE_CONFIG` restart, Klipper tells yo
 | 7/7 | `EDDY_NG_BACKLASH_7VON7` | Z-axis backlash estimation | ~2 min |
 
 > **Note:** Step 1 requires manual interaction (lowering the nozzle with `TESTZ`). All other steps are fully automatic.
->
-> Steps 5-7 accept parameters for your print conditions:
-> - **Step 5:** `BED_TEMP=110 MIN_TEMP=40 MAX_TEMP=70 HOTEND_FAN=1` — bed temp, sensor temp range, hotend fan for cooling
-> - **Step 6:** `BED_TEMP=60 HOTEND_TEMP=150` — calibrate twist at print temperature for best accuracy
-> - **Step 7:** No parameters needed
+
+**Configuring defaults:** Edit `_EDDY_NG_SETTINGS` in `calibrate_macros.cfg` to set your printer's default values. These are used when no parameter is given:
+
+```ini
+[gcode_macro _EDDY_NG_SETTINGS]
+# Temperature Compensation (Step 5)
+variable_bed_temp: 110          # Bed temperature
+variable_min_temp: 40           # Min sensor temp to measure
+variable_max_temp: 70           # Max sensor temp to measure
+variable_hotend_fan: 0          # 1 = use hotend fan for faster cooling
+
+# Axis Twist (Step 6)
+variable_twist_axis: "BOTH"     # X, Y, or BOTH
+variable_twist_sample_count: 7  # Points per axis
+variable_twist_bed_temp: 60     # Bed temp (0 = cold)
+variable_twist_hotend_temp: 150 # Hotend temp (0 = cold)
+```
+
+You can always override individual values per call, e.g. `EDDY_NG_TEMP_CALIBRATE_5VON7 BED_TEMP=110 HOTEND_FAN=1`. Run `_EDDY_NG_SETTINGS` to display the current defaults.
 
 #### Option B: Automatic Script (via SSH)
 

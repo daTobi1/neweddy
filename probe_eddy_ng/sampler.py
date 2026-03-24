@@ -160,6 +160,13 @@ class ProbeEddySampler:
 
         return True
 
+    def get_last_freq(self) -> Optional[float]:
+        """Get the last sampled frequency, or None if no samples yet."""
+        self._update_samples()
+        if len(self.freqs) == 0:
+            return None
+        return self.freqs[-1]
+
     # get the last sampled height
     def get_last_height(self) -> float:
         if self.heights is None:

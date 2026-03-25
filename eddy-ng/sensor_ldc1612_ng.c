@@ -332,13 +332,20 @@ config_ldc1612_ng(uint32_t oid, uint32_t i2c_oid, uint8_t product, int32_t intb_
         // This enables the ldc1612 (CS?)
         gpio_out_setup(GPIO('A', 15), 0);
 
-        // The Cartographer hardware uses a timer in the STM32F0
-        // to generate a 24MHz reference clock for the ldc1612.
-        // Uses a new _with_max setup here because otherwise we
-        // can't actually get to 24MHz from 48MHz. This could be
-        // configured from the python side but that requires
-        // adding a bunch of new commands.
-        gpio_pwm_setup_with_max(GPIO('B', 4), 1, 1, 2);
+        // Generate 24MHz reference clock for LDC1612 via TIM3_CH1 on PB4.
+        // Direct register setup: 48MHz / (ARR+1) = 48MHz / 2 = 24MHz.
+        {
+            enable_pclock((uint32_t)TIM3);
+            gpio_peripheral(GPIO('B', 4), GPIO_FUNCTION(1), 0);
+            TIM3->PSC = 0;          // no prescaler
+            TIM3->ARR = 1;          // period = 2 ticks
+            TIM3->CCR1 = 1;         // 50% duty cycle
+            TIM3->CCMR1 = (6 << 4)  // OC1M = PWM mode 1
+                        | (1 << 3);  // OC1PE = preload enable
+            TIM3->CCER = (1 << 0);  // CC1E = enable CH1 output
+            TIM3->EGR = (1 << 0);   // UG = force update
+            TIM3->CR1 = (1 << 0);   // CEN = enable counter
+        }
 
         // There's a LED -- do something with it in the future,
         // showing homing progress

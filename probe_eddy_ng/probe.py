@@ -2774,6 +2774,10 @@ class ProbeEddy:
                            "calibrate_end_x", f"{r['end']:.1f}")
             configfile.set("axis_twist_compensation",
                            "calibrate_y", f"{r['fixed_pos']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "compensation_start_x", f"{r['start']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "compensation_end_x", f"{r['end']:.1f}")
 
         if "Y" in all_results:
             r = all_results["Y"]
@@ -2786,6 +2790,10 @@ class ProbeEddy:
                            "calibrate_end_y", f"{r['end']:.1f}")
             configfile.set("axis_twist_compensation",
                            "calibrate_x", f"{r['fixed_pos']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "compensation_start_y", f"{r['start']:.1f}")
+            configfile.set("axis_twist_compensation",
+                           "compensation_end_y", f"{r['end']:.1f}")
 
         # Turn off heaters if we heated
         if bed_temp > 0 or hotend_temp > 0:

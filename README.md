@@ -46,6 +46,7 @@ eddy-ng adds accurate Z-offset setting by physically making contact with the bui
 - [Uninstallation](#uninstallation)
 - [Project Structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
+  - [QGL fails with "Probed points range is increasing"](#qgl-fails-with-probed-points-range-is-increasing)
 - [Support](#support)
 - [License](#license)
 
@@ -1200,6 +1201,36 @@ endstop_pin: probe:z_virtual_endstop
 ```
 
 And that your config has `[probe_eddy_ng my_eddy]` (not `[cartographer_eddy ...]` or similar).
+
+### QGL fails with "Probed points range is increasing"
+
+This is **not** a Z motor wiring issue. Eddy current probes have reduced accuracy at higher distances from the bed. The default coarse phase of a 2-stage QGL (typically at 10mm `HORIZONTAL_MOVE_Z`) may produce readings that oscillate by ~0.1mm, which is too much for a tight tolerance like 0.05mm.
+
+**Fix:** Increase the coarse tolerance so the coarse phase passes quickly, then let the fine phase (at 3mm) do the precision work. Example 2-stage QGL macro:
+
+```ini
+[gcode_macro QUAD_GANTRY_LEVEL]
+rename_existing: _QUAD_GANTRY_LEVEL
+gcode:
+  {% set coarse_z   = params.COARSE_Z|default(10.0)|float %}
+  {% set fine_z     = params.FINE_Z|default(3.0)|float %}
+  {% set coarse_tol = params.COARSE_TOL|default(0.15)|float %}
+  {% set fine_tol   = params.FINE_TOL|default(0.005)|float %}
+  {% set coarse_r   = params.COARSE_RETRIES|default(10)|int %}
+  {% set fine_r     = params.FINE_RETRIES|default(10)|int %}
+
+  M117 QGL coarse
+  _QUAD_GANTRY_LEVEL HORIZONTAL_MOVE_Z={coarse_z} RETRY_TOLERANCE={coarse_tol} RETRIES={coarse_r}
+  G90
+  G0 Z{coarse_z} F1000
+  M117 QGL fine
+  _QUAD_GANTRY_LEVEL HORIZONTAL_MOVE_Z={fine_z} RETRY_TOLERANCE={fine_tol} RETRIES={fine_r}
+  M117 QGL done
+```
+
+A coarse tolerance of 0.15mm works well -- the fine phase at 3mm height reliably converges to <0.005mm.
+
+**Note:** If you use `axis_twist_compensation`, keep it **enabled** during QGL. The compensation corrects systematic probe errors and helps QGL converge more accurately.
 
 ### Eddy Duo not detected
 

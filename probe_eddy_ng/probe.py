@@ -797,6 +797,7 @@ class ProbeEddy:
         # Now reset the axis so that we have a full range to calibrate with
         th_pos = th.get_position()
         # XXX This is proably not correct for some printers?
+        kin = th.get_kinematics()
         zrange = kin.rails[2].get_range()
         th_pos[2] = zrange[1] - 20.0
         self._set_toolhead_position(th_pos, [2])

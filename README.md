@@ -17,6 +17,7 @@ eddy-ng adds accurate Z-offset setting by physically making contact with the bui
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
+  - [Remote Installation (from Windows)](#remote-installation-from-windows)
   - [BTT Eddy Duo (RP2040)](#installation-btt-eddy-duo-rp2040)
   - [Other Eddy Sensors](#installation-other-eddy-sensors)
 - [Configuration](#configuration)
@@ -132,6 +133,43 @@ If Klipper is in a non-standard location:
 ```bash
 ./install.sh /path/to/klipper
 ```
+
+### Remote Installation (from Windows)
+
+If you prefer to run the installation from a Windows PC (no SSH terminal on the printer needed), use the remote installer:
+
+```bash
+pip install paramiko
+python install_eddy_ng.py
+```
+
+The script connects to the printer via SSH (default: `192.168.178.60`, user `biqu`) and performs all 8 steps remotely: repo update, Python dependencies, scaffolding, firmware patch, `.config` generation, firmware build, verification, and `eddy-ng.cfg` generation.
+
+**Features:**
+- Auto-detects probe type (BTT Eddy / Cartographer) and printer size (250mm / 350mm)
+- Interactive confirmation menu — lets you override auto-detected values
+- Generates correct Klipper `.config` for RP2040 or STM32F042
+- Generates `eddy-ng.cfg` with geometry presets matching your printer size
+
+**CLI flags:**
+
+| Flag | Description |
+|---|---|
+| `--btt-eddy` | Force BTT Eddy Duo (RP2040) |
+| `--cartographer` | Force Cartographer (STM32F042) |
+| `--size 250` or `--size 350` | Set printer size |
+| `-y` / `--yes` | Skip interactive confirmation |
+
+**Examples:**
+
+```bash
+python install_eddy_ng.py                          # Interactive (auto-detect + confirm)
+python install_eddy_ng.py --btt-eddy --size 250    # BTT Eddy on 250mm printer
+python install_eddy_ng.py --cartographer --size 350 # Cartographer on 350mm printer
+python install_eddy_ng.py -y                       # Auto-detect, no confirmation
+```
+
+After installation, flash the firmware via Katapult CAN and run the calibration macros (see [First-Time Setup](#first-time-setup)).
 
 ### Installation: BTT Eddy Duo (RP2040)
 

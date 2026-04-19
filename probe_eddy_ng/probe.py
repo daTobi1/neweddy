@@ -1544,9 +1544,27 @@ class ProbeEddy:
         # This is where the probe thinks we are
         now_height = self._sampler.get_height_now()
 
-        # If we can't get a value at all for right now, for safety, just abort.
+        # If we can't get a value, the sensor may be saturated (too close to
+        # bed causing ERR_AHE) or not yet streaming.  Try moving up first.
         if now_height is None:
-            raise self._printer.command_error("Couldn't get any valid samples from sensor.")
+            self._log_info(
+                "No valid sensor samples – assuming too close to bed, moving up"
+            )
+            recovery_move = start_height + 5.0
+            th_pos[2] = rail_range[1] - (recovery_move + 10.0)
+            self._set_toolhead_position(th_pos, [2])
+            th.manual_move(
+                [None, None, th_pos[2] + recovery_move], self.params.lift_speed
+            )
+            th.wait_moves()
+            self._reactor.pause(self._reactor.monotonic() + 0.500)
+            now_height = self._sampler.get_height_now()
+            if now_height is None:
+                raise self._printer.command_error(
+                    "Couldn't get any valid samples from sensor even after"
+                    " moving up. Check wiring and run PROBE_EDDY_NG_STATUS."
+                )
+            th_pos = th.get_position()
 
         self._log_debug(f"probe_to_start_position_unhomed: now: {now_height} (start {start_height})")
         if abs(now_height - start_height) <= start_height_ok_factor:
